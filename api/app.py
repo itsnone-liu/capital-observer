@@ -25,6 +25,10 @@ engine = create_engine(DB_URL, future=True, connect_args={"check_same_thread": F
 
 app = FastAPI(title="capital-observer", version="0.1.0-p2")
 
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+app.mount("/dashboard", StaticFiles(directory=str(ROOT / "dashboard"), html=True), name="dashboard")
+
 INDICES = ["sh000300", "sh000016", "sh000905", "sh000852", "sh000912",
            "sz399006", "sh000688"]
 
@@ -70,6 +74,35 @@ def get_etf_structure(code: str):
         v = etf_size_decomposition(s, code)
     v["published_cutoff"] = v["as_of"]
     return v
+
+
+@app.get("/api/v1/margin/history")
+def get_margin_history(days: int = Query(120, ge=10, le=2000)):
+    import pandas as pd
+    with _session() as s:
+        rows = s.execute(
+            select(FactObservation.effective_at, FactObservation.metric,
+                   FactObservation.value)
+            .where(FactObservation.subject_key == "market:SSE",
+                   FactObservation.metric.in_(("margin_fin_balance", "margin_fin_buy")),
+                   FactObservation.quality_status == "valid")
+            .order_by(FactObservation.effective_at)).all()
+    if not rows:
+        raise HTTPException(503, "no margin data")
+    df = pd.DataFrame(rows, columns=["date", "metric", "value"])
+    df = df.groupby(["date", "metric"], as_index=False).agg(value=("value", "last"))
+    piv = df.pivot(index="date", columns="metric", values="value").reset_index()
+    piv = piv.tail(days)
+    return {
+        "data": {"dates": piv["date"].tolist(),
+                 "fin_balance": piv.get("margin_fin_balance", pd.Series(dtype=float)).tolist(),
+                 "fin_buy": piv.get("margin_fin_buy", pd.Series(dtype=float)).tolist()},
+        "as_of": str(piv["date"].iloc[-1]) if len(piv) else None,
+        "coverage": f"{len(piv)}个交易日(上交所口径)",
+        "denominator": "交易所披露原值(元)",
+        "warnings": ["仅上交所；深交所逐日接口待并入"],
+        "published_cutoff": str(piv["date"].iloc[-1]) if len(piv) else None,
+    }
 
 
 @app.get("/api/v1/quality/status")

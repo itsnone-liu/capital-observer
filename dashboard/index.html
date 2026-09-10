@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>capital-observer 观测台</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#0e1117; --panel:#161b26; --line:#232a3a; --txt:#d7dde8; --dim:#7b8494; --up:#e05664; --dn:#3fb28f; --acc:#5b8cff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; gap:18px; align-items:baseline; }
+  header h1 { font-size:17px; font-weight:600; }
+  header .meta { color:var(--dim); font-size:12px; }
+  nav { display:flex; gap:4px; padding:0 22px; border-bottom:1px solid var(--line); }
+  nav button { background:none; border:none; color:var(--dim); padding:10px 16px; cursor:pointer; font-size:14px; border-bottom:2px solid transparent; }
+  nav button.on { color:var(--txt); border-bottom-color:var(--acc); }
+  main { padding:18px 22px; }
+  .page { display:none; } .page.on { display:block; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card .t { color:var(--dim); font-size:12px; } .card .v { font-size:20px; margin:4px 0 2px; }
+  .card .sub { font-size:12px; color:var(--dim); }
+  .pos { color:var(--up); } .neg { color:var(--dn); }
+  .grid2 { display:grid; grid-template-columns:1.4fr 1fr; gap:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .panel h3 { font-size:13px; color:var(--dim); font-weight:500; margin-bottom:8px; }
+  .chart { width:100%; height:340px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; } td:first-child, th:first-child { text-align:left; }
+  .note { color:var(--dim); font-size:12px; margin-top:10px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; border:1px solid var(--line); color:var(--dim); margin-left:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>A股资金结构观测台</h1>
+  <span class="meta" id="meta">加载中…</span>
+  <span class="pill">事实层 v0.1 · 免费源</span>
+</header>
+<nav>
+  <button data-p="overview" class="on">大盘总览</button>
+  <button data-p="sectors">板块对比</button>
+  <button data-p="margin">两融</button>
+  <button data-p="quality">数据质量</button>
+</nav>
+<main>
+  <div id="p-overview" class="page on">
+    <div class="cards" id="idx-cards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>沪深300（近250交易日，新浪源）</h3><div id="c-idx" class="chart"></div></div>
+      <div class="panel"><h3>指数收益对比</h3><div id="c-idxbar" class="chart"></div></div>
+    </div>
+    <p class="note">口径：公开收盘与成交额事实；不构成任何买卖建议。缺口区间如实标注，不插值。</p>
+  </div>
+  <div id="p-sectors" class="page">
+    <div class="panel"><h3>申万一级行业：20日收益排名（31行业全量）</h3><div id="c-sector" class="chart" style="height:640px"></div></div>
+    <p class="note" id="sector-note"></p>
+  </div>
+  <div id="p-margin" class="page">
+    <div class="cards" id="mg-cards"></div>
+    <div class="panel"><h3>上交所融资余额（元）</h3><div id="c-margin" class="chart"></div></div>
+    <p class="note">仅上交所口径；深交所为逐日接口待并入。两融与ETF流量分属不同口径，系统不做相加。</p>
+  </div>
+  <div id="p-quality" class="page">
+    <div class="panel"><h3>事实库指标覆盖</h3><div id="c-quality" class="chart" style="height:420px"></div></div>
+    <div class="panel"><h3>采集任务状态</h3><table id="t-jobs"></table></div>
+  </div>
+</main>
+<script>
+const IDX_NAMES = {sh000300:'沪深300',sh000016:'上证50',sh000905:'中证500',sh000852:'中证1000',sh000912:'中证2000',sz399006:'创业板指',sh000688:'科创50'};
+const fmtYi = v => v==null?'—':(v/1e8).toFixed(0)+'亿';
+const pct = v => v==null?'—':(v*100).toFixed(2)+'%';
+const cls = v => v==null?'':(v>=0?'pos':'neg');
+const charts = {};
+function chart(id){ const el=document.getElementById(id); if(!el) return null; if(!charts[id]) charts[id]=echarts.init(el); return charts[id]; }
+async function j(url){ const r=await fetch(url); if(!r.ok) throw new Error(url+' '+r.status); return r.json(); }
+
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id==='p-'+b.dataset.p));
+  Object.values(charts).forEach(c=>c.resize());
+});
+
+(async () => {
+  // ---------- overview ----------
+  try {
+    const ov = await j('/api/v1/market/overview');
+    document.getElementById('meta').textContent = `as_of ${ov.as_of} · 覆盖 ${ov.coverage}`;
+    const wrap = document.getElementById('idx-cards');
+    wrap.innerHTML = Object.entries(ov.data).map(([k,v])=>{
+      if(!v.close) return `<div class="card"><div class="t">${IDX_NAMES[k]||k}</div><div class="v">—</div><div class="sub">无数据</div></div>`;
+      return `<div class="card"><div class="t">${IDX_NAMES[k]||k}</div><div class="v">${v.close.toFixed(1)}</div>
+        <div class="sub">1日 <span class="${cls(v.ret_1d)}">${pct(v.ret_1d)}</span> · 20日 <span class="${cls(v.ret_20d)}">${pct(v.ret_20d)}</span> · 60日 <span class="${cls(v.ret_60d)}">${pct(v.ret_60d)}</span></div></div>`;
+    }).join('');
+    const bar = chart('c-idxbar');
+    if(bar){ const names=Object.keys(ov.data).filter(k=>ov.data[k].ret_20d!=null);
+      bar.setOption({backgroundColor:'transparent',grid:{left:90,right:20,top:10,bottom:24},
+        xAxis:{type:'value',axisLabel:{color:'#7b8494',formatter:v=>(v*100).toFixed(0)+'%'},splitLine:{lineStyle:{color:'#232a3a'}}},
+        yAxis:{type:'category',data:names.map(k=>IDX_NAMES[k]||k),axisLabel:{color:'#d7dde8'}},
+        series:[{type:'bar',data:names.map(k=>{const r=ov.data[k].ret_20d;return {value:r,itemStyle:{color:r>=0?'#e05664':'#3fb28f'}};}),barWidth:12}]});
+    }
+  } catch(e){ document.getElementById('meta').textContent='API不可达：'+e.message; }
+
+  // ---------- sectors ----------
+  try {
+    const sr = await j('/api/v1/sectors/ranking');
+    document.getElementById('sector-note').textContent = `as_of ${sr.as_of} · ${sr.coverage} · ${sr.denominator}`;
+    const c = chart('c-sector'); if(!c) return;
+    const d = [...sr.data].reverse();
+    c.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis',axisPointer:{type:'shadow'},valueFormatter:v=>(v*100).toFixed(2)+'%'},
+      grid:{left:80,right:40,top:10,bottom:24},
+      xAxis:{type:'value',axisLabel:{color:'#7b8494',formatter:v=>(v*100).toFixed(0)+'%'},splitLine:{lineStyle:{color:'#232a3a'}}},
+      yAxis:{type:'category',data:d.map(x=>x.name||x.industry),axisLabel:{color:'#d7dde8'}},
+      series:[{type:'bar',data:d.map(x=>{const r=x.ret_20d;return {value:r,itemStyle:{color:r>=0?'#e05664':'#3fb28f'}};}),barWidth:10}]});
+  } catch(e){}
+
+  // ---------- margin ----------
+  try {
+    const mv = await j('/api/v1/margin/summary'), mh = await j('/api/v1/margin/history?days=250');
+    const d = mv.data;
+    document.getElementById('mg-cards').innerHTML = `
+      <div class="card"><div class="t">融资余额(上交所)</div><div class="v">${(d.latest_balance_yuan/1e12).toFixed(2)}万亿</div><div class="sub">as_of ${mv.as_of}</div></div>
+      <div class="card"><div class="t">20日变化</div><div class="v ${cls(d.balance_chg_20d_yuan)}">${fmtYi(d.balance_chg_20d_yuan)}</div><div class="sub">窗口首尾差</div></div>
+      <div class="card"><div class="t">5日变化</div><div class="v ${cls(d.balance_chg_5d_yuan)}">${fmtYi(d.balance_chg_5d_yuan)}</div><div class="sub">窗口首尾差</div></div>
+      <div class="card"><div class="t">20日融资买入合计</div><div class="v">${fmtYi(d.buy_sum_20d_yuan)}</div><div class="sub">买入额加总</div></div>`;
+    const c = chart('c-margin');
+    if(c && mh.data.dates.length){
+      c.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},
+        grid:{left:80,right:20,top:10,bottom:40},
+        xAxis:{type:'category',data:mh.data.dates,axisLabel:{color:'#7b8494',rotate:35}},
+        yAxis:{type:'value',scale:true,axisLabel:{color:'#7b8494',formatter:v=>(v/1e12).toFixed(2)+'万亿'},splitLine:{lineStyle:{color:'#232a3a'}}},
+        series:[{type:'line',data:mh.data.fin_balance,showSymbol:false,lineStyle:{color:'#5b8cff',width:1.6},areaStyle:{color:'rgba(91,140,255,0.08)'}}]});
+    }
+  } catch(e){}
+
+  // ---------- quality ----------
+  try {
+    const q = await j('/api/v1/quality/status');
+    const c = chart('c-quality');
+    if(c){ const rows=q.data.facts_by_metric.slice(0,14);
+      c.setOption({backgroundColor:'transparent',grid:{left:130,right:50,top:10,bottom:24},
+        xAxis:{type:'value',axisLabel:{color:'#7b8494'},splitLine:{lineStyle:{color:'#232a3a'}}},
+        yAxis:{type:'category',data:rows.map(r=>r.metric).reverse(),axisLabel:{color:'#d7dde8'}},
+        series:[{type:'bar',data:rows.map(r=>r.rows).reverse(),barWidth:12,itemStyle:{color:'#5b8cff'}}]}); }
+    const t = document.getElementById('t-jobs');
+    t.innerHTML = '<tr><th>任务</th><th>状态</th><th>完成时间</th></tr>' +
+      q.data.recent_jobs.map(j=>`<tr><td>${j.job_key}</td><td>${j.status}</td><td>${j.finished_at||''}</td></tr>`).join('');
+  } catch(e){}
+})();
+window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c.resize()));
+</script>
+</body>
+</html>
