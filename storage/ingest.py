@@ -39,7 +39,8 @@ def _existing_fact(session: Session, r: dict):
     ).scalars().first()
 
 
-def write_records(session: Session, records: list[dict]) -> dict:
+def write_records(session: Session, records: list[dict], fill_only: bool = False) -> dict:
+    """fill_only=True: existing facts stay untouched (fallback fills gaps only)."""
     stats = {"fact_inserted": 0, "fact_superseded": 0, "disclosure_inserted": 0,
              "skipped_unchanged": 0, "unknown_kind": 0}
     for r in records:
