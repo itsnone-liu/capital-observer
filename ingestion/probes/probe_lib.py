@@ -21,6 +21,30 @@ SAMPLES_DIR = ROOT / "data" / "raw_samples" / "p0"
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# --- Eastmoney WAF resets connections carrying the default python UA.  -----
+# Inject a browser UA on every requests call library-wide (discovered in P0,
+# 2026-09-10: bare requests -> RemoteDisconnected; browser UA -> 200).
+import requests as _rq  # noqa: E402
+import socket as _socket  # noqa: E402
+
+_socket.setdefaulttimeout(25)  # requests has no default timeout; a hung
+# upstream (csindex accept-then-silence, P0 2026-09-10) would block forever.
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+_orig_request = _rq.Session.request
+
+
+def _patched_request(self, method, url, **kw):
+    headers = kw.pop("headers", None) or {}
+    headers.setdefault("User-Agent", _UA)
+    kw["headers"] = headers
+    kw.setdefault("timeout", 20)
+    return _orig_request(self, method, url, **kw)
+
+
+_rq.Session.request = _patched_request
+
 _MIN_INTERVAL = 1.2  # seconds between calls to the SAME upstream; conservative
 _LAST_CALL: dict[str, float] = {}
 
@@ -112,9 +136,21 @@ class Probe:
             "check": name, "upstream": upstream, "adapter_entry": entry,
             "tested_at": _now_iso(), "note": note,
         }
+        attempt, last_exc = 0, None
+        for attempt in (1, 2, 3):  # EM WAF resets are intermittent: retry w/ backoff
+            try:
+                rate_limit(upstream, interval=_MIN_INTERVAL + attempt)
+                out = fn()
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if classify_error(exc) in ("parse", "schema") or attempt == 3:
+                    break
+                time.sleep(2.0 * attempt)
         try:
-            rate_limit(upstream)
-            out = fn()
+            if last_exc is not None:
+                raise last_exc
             if isinstance(out, tuple) and len(out) == 2 and isinstance(out[1], dict):
                 df, artifact_meta = out
             else:

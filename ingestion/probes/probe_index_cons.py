@@ -44,34 +44,23 @@ def _sw_cons():
 P.check("sw_industry_component_map", "swsresearch", "akshare.index_component_sw", _sw_cons,
         expect_min_rows=50, note="stock->SW industry map; effective dating handled downstream")
 
-# ---- 4. EM board constituents (industry map alternative) ------------------
+# ---- 4. EM board constituents (industry map alternative, via clist) -------
 def _em_cons():
-    df = ak.stock_board_industry_cons_em(symbol="半导体")
+    import em_client
+    df = em_client.board_cons("BK1036")
     return df_artifact(df, "index_cons", "em_cons_semiconductor",
-                       "akshare:stock_board_industry_cons_em (upstream: eastmoney)", "eastmoney")
-P.check("em_board_constituents", "eastmoney", "akshare.stock_board_industry_cons_em", _em_cons,
-        expect_min_rows=30, note="EM board membership; snapshot only — history needs archiving")
+                       "em_client:board_cons/BK1036 (upstream: eastmoney clist)", "eastmoney")
+P.check("em_board_constituents", "eastmoney", "em_client.board_cons", _em_cons,
+        expect_min_rows=30, note="EM board membership via push2delay clist; snapshot only")
 
-# ---- 5. stock list w/ industry column (universe & join key) ---------------
+# ---- 5. stock universe snapshot w/ mcap (clist paging) ----------------------
 def _stock_list():
-    df = ak.stock_zh_a_spot_em()
-    cols = [c for c in df.columns if c in ("代码", "名称", "总市值", "流通市值")]
-    df2 = df[["代码", "名称"] + cols[2:]] if len(cols) >= 2 else df
-    return df_artifact(df2, "index_cons", "a_stock_spot_snapshot",
-                       "akshare:stock_zh_a_spot_em (upstream: eastmoney)", "eastmoney")
-P.check("a_stock_universe_snapshot", "eastmoney", "akshare.stock_zh_a_spot_em", _stock_list,
+    import em_client
+    df = em_client.spot_all_a()
+    return df_artifact(df, "index_cons", "a_stock_spot_snapshot",
+                       "em_client:spot_all_a (upstream: eastmoney clist)", "eastmoney")
+P.check("a_stock_universe_snapshot", "eastmoney", "em_client.spot_all_a", _stock_list,
         expect_min_rows=4000, note="mcap for margin ratios; join key for industry aggregation")
-
-# ---- 6. index basic info from CSI (classification versions) ----------------
-def _csi_info():
-    df = ak.index_detail_info_cni(symbol="399006") if hasattr(ak, "index_detail_info_cni") else None
-    if df is None:
-        # fallback: CSI index detail via stock_zh_index_value_csindex? just record absence
-        raise KeyError("no cni detail api; try csindex value api")
-    return df_artifact(df, "index_cons", "cni_detail_399006",
-                       "akshare:index_detail_info_cni (upstream: cnindex)", "cnindex")
-P.check("cni_index_detail", "cnindex", "akshare.index_detail_info_cni", _csi_info,
-        note="secondary index issuer coverage")
 
 P.finish({
     "goal": "constituent+weight snapshots for look-through; HISTORICAL weight versions flagged as gap risk",

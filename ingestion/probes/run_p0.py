@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 RESULTS = ROOT / "data" / "p0_results"
 
-ALL_PROBES = ["index_market", "etf_share", "margin", "fund_holdings", "index_cons"]
+ALL_PROBES = ["index_market", "etf_share", "margin", "fund_holdings", "index_cons", "baostock"]
 
 
 def run(probes: list[str]) -> None:

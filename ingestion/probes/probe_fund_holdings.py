@@ -25,18 +25,27 @@ SAMPLE_FUNDS = [
     ("005827", "易方达蓝筹精选", "混合"),
 ]
 
-# ---- 1. quarterly top holdings (季报重仓 top10) --------------------------
+# ---- 1. quarterly top holdings (date=YEAR; returns all quarters) ----------
 for code, label, ftype in SAMPLE_FUNDS[:2]:
     def _f(code=code):
-        df = ak.fund_portfolio_hold_em(symbol=code, date="20251")
-        return df_artifact(df, "fund_holdings", f"hold_{code}_2025Q1",
+        df = ak.fund_portfolio_hold_em(symbol=code, date="2025")
+        return df_artifact(df, "fund_holdings", f"hold_{code}_2025",
                            f"akshare:fund_portfolio_hold_em/{code} (upstream: eastmoney/tiantian)", "eastmoney")
     P.check(f"quarterly_top_holdings_{code}", "eastmoney", "akshare.fund_portfolio_hold_em", _f,
-            expect_min_rows=5, note=f"{label} {ftype}; expect ~10 top holdings, scope=top_holdings")
+            expect_min_rows=5, note=f"{label} {ftype}; date is YEAR not quarter (sig fix)")
+
+# ---- 1b. fundf10 direct HTML (adapter-independent fallback) ---------------
+def _f10():
+    import em_client
+    df = em_client.fund10_holdings("005827", year=2025)
+    return df_artifact(df, "fund_holdings", "hold_f10_005827_2025",
+                       "em_client:fund10_holdings (upstream: eastmoney fundf10)", "eastmoney")
+P.check("fundf10_holdings_direct_005827", "eastmoney", "em_client.fund10_holdings", _f10,
+        note="direct parse if akshare adapter breaks (JSONDecode ';' issue)")
 
 # ---- 2. full portfolio availability check (年报/半年报全持仓) ------------
 def _full():
-    df = ak.fund_portfolio_hold_em(symbol="005827", date="20241")
+    df = ak.fund_portfolio_hold_em(symbol="005827", date="2024")
     n = df.shape[0]
     print(f"[fund_holdings] 005827 2024 annual rows={n} (full portfolio would be >>10)", flush=True)
     return df_artifact(df, "fund_holdings", "hold_005827_2024_annual",
@@ -60,7 +69,7 @@ def _nav():
 P.check("fund_nav_history", "eastmoney", "akshare.fund_open_fund_info_em", _nav,
         expect_min_rows=500)
 
-# ---- 5. fund scale (资产净值/份额 quarterly from 分红送配详情页 f10) -------
+# ---- 5. fund share/scale quarterly ---------------------------------------
 def _scale():
     fn = None
     for cand in ("fund_scale_change_em", "fund_etf_scale_change_em"):
@@ -69,7 +78,7 @@ def _scale():
             break
     if fn is None:
         raise KeyError("no fund_scale_change_em")
-    df = fn(symbol="005827")
+    df = fn() if fn.__name__ == "fund_scale_change_em" else fn(symbol="005827")
     return df_artifact(df, "fund_holdings", "scale_change_005827",
                        f"akshare:{fn.__name__} (upstream: eastmoney)", "eastmoney")
 P.check("fund_share_scale_change", "eastmoney", "akshare.fund_scale_change_em", _scale,
