@@ -23,6 +23,29 @@ from sqlalchemy.orm import Session
 
 from storage.models import Base, JobRun, RawArtifact, init_db
 
+# --- transport hygiene: EVERY production fetch path gets these guards ------
+# (P0 lessons: no default timeout -> hung upstreams; default UA -> EM WAF RST)
+import socket as _socket
+
+import requests as _rq
+
+_socket.setdefaulttimeout(25)
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+_orig_req = _rq.Session.request
+
+
+def _guarded_request(self, method, url, **kw):
+    headers = kw.pop("headers", None) or {}
+    headers.setdefault("User-Agent", _UA)
+    kw["headers"] = headers
+    kw.setdefault("timeout", 20)
+    return _orig_req(self, method, url, **kw)
+
+
+_rq.Session.request = _guarded_request
+
 RETRYABLE = {"network", "timeout", "http_5xx", "http_4xx"}
 MAX_RETRIES = 3
 BACKOFF_BASE = 5.0  # seconds, with jitter
@@ -86,10 +109,14 @@ class CollectionAdapter(ABC):
         """Parse one artifact -> normalized records (facts or disclosures)."""
 
     def validate(self, records: list[dict]) -> tuple[list[dict], list[str]]:
-        """Structural validation; isolate (not ingest) bad batches."""
+        """Structural validation; isolate (not ingest) bad batches.
+        Numeric checks apply to facts only; membership/asset_info pass through."""
         warns = []
         good = []
         for r in records:
+            if r.get("kind", "fact") != "fact":
+                good.append(r)
+                continue
             if r.get("value") is None:
                 warns.append(f"null value dropped: {r.get('metric')}@{r.get('effective_at')}")
                 continue
@@ -122,7 +149,7 @@ def archive_artifact(session: Session, dataset: str, name: str, payload: bytes |
     path = d / f"{name}__{chash[:10]}.raw"
     path.write_bytes(payload)
     art = RawArtifact(artifact_id=art_id, content_hash=chash, path=str(path),
-                      fetched_at=dt.datetime.now(dt.timezone.utc), url=url,
+                      fetched_at=dt.datetime.utcnow(), url=url,
                       upstream_id=upstream, content_type=content_type,
                       parser_version=parser_version, bytes=len(payload))
     session.add(art)
@@ -150,10 +177,10 @@ class JobRunner:
             if jr.status == "running":
                 # stale-lock heuristic: >2h assume dead
                 stale = (jr.started_at and
-                         (dt.datetime.now(dt.timezone.utc) - jr.started_at).total_seconds() > 7200)
+                         (dt.datetime.utcnow() - jr.started_at).total_seconds() > 7200)
                 if not stale:
                     return {"skipped": "running", "job_key": job_key}
-            jr.status, jr.lock_token, jr.started_at = "running", lock, dt.datetime.now(dt.timezone.utc)
+            jr.status, jr.lock_token, jr.started_at = "running", lock, dt.datetime.utcnow()
             jr.retries = jr.retries or 0
             s.commit()
             cursor = jr.cursor or ""
@@ -208,7 +235,7 @@ class JobRunner:
                 "partial" if summary["ok"] > 0 else "failed")
             with Session(self.engine) as s3:
                 jr3 = s3.execute(select(JobRun).where(JobRun.job_key == job_key)).scalar_one()
-                jr3.status, jr3.finished_at = status, dt.datetime.now(dt.timezone.utc)
+                jr3.status, jr3.finished_at = status, dt.datetime.utcnow()
                 jr3.data_range = f"{todo[0]}..{todo[-1]}" if todo else ""
                 jr3.notes = json.dumps(summary, ensure_ascii=False)[:4000]
                 s3.commit()

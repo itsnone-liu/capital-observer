@@ -8,7 +8,21 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from storage.models import FactObservation, PositionDisclosure
+from storage.models import (Asset, AssetMembership, FactObservation,
+                            PositionDisclosure)
+
+
+def _ensure_asset(session: Session, asset_key: str, asset_type: str = "stock") -> Asset:
+    a = session.execute(select(Asset).where(Asset.asset_key == asset_key)).scalar_one_or_none()
+    if a is None:
+        a = Asset(asset_key=asset_key, asset_type=asset_type, name="")
+        session.add(a)
+        session.flush()
+    return a
+
+
+def _ensure_group_asset(session: Session, group_key: str) -> Asset:
+    return _ensure_asset(session, group_key, asset_type="index")
 
 
 def _existing_fact(session: Session, r: dict):
@@ -74,6 +88,34 @@ def write_records(session: Session, records: list[dict]) -> dict:
                 company_action_basis=r.get("company_action_basis", ""),
                 published_at=r.get("published_at")))
             stats["disclosure_inserted"] += 1
+        elif kind == "asset_info":
+            a = _ensure_asset(session, r["asset_key"], r.get("asset_type", "stock"))
+            if r.get("name") and not a.name:
+                a.name = r["name"]
+                stats.setdefault("asset_named", 0)
+                stats["asset_named"] += 1
+            else:
+                stats["skipped_unchanged"] += 1
+        elif kind == "membership":
+            _ensure_group_asset(session, r["group_key"])
+            _ensure_asset(session, r["asset_key"])
+            ga = session.execute(select(Asset).where(Asset.asset_key == r["group_key"])).scalar_one()
+            ma = session.execute(select(Asset).where(Asset.asset_key == r["asset_key"])).scalar_one()
+            existing = session.execute(
+                select(AssetMembership).where(
+                    AssetMembership.asset_id == ma.id,
+                    AssetMembership.group_asset_id == ga.id,
+                    AssetMembership.classification_version == r["classification_version"])
+            ).scalar_one_or_none()
+            if existing is not None:
+                stats["skipped_unchanged"] += 1
+                continue
+            session.add(AssetMembership(
+                asset_id=ma.id, group_asset_id=ga.id, weight=r.get("weight"),
+                classification_version=r["classification_version"],
+                effective_from=r["effective_from"]))
+            stats.setdefault("membership_inserted", 0)
+            stats["membership_inserted"] += 1
         else:
             stats["unknown_kind"] += 1
     session.commit()

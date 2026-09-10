@@ -56,7 +56,7 @@ class SWIndustryBarsAdapter(CollectionAdapter):
                 recs.append(dict(kind="fact", table="fact_observation",
                                  subject_key=f"industry:{item}", asset_key=item,
                                  metric="sw_amount", value=float(row["成交额"]),
-                                 unit="yuan", currency="CNY",
+                                 unit="yuan_100m", currency="CNY",
                                  effective_at=date, published_at=date,
                                  quality_status="valid"))
         return recs
@@ -93,6 +93,9 @@ class SWIndustryListAdapter(CollectionAdapter):
         recs = []
         for _, row in df.iterrows():
             code = str(row["行业代码"]).split(".")[0]
+            name = str(row["行业名称"])
+            recs.append(dict(kind="asset_info", table="asset", asset_key=code,
+                             asset_type="industry", name=name))
             for metric, col, unit in (("sw_member_count", "成份个数", "count"),
                                       ("sw_pe_static", "静态市盈率", "ratio"),
                                       ("sw_pb", "市净率", "ratio"),

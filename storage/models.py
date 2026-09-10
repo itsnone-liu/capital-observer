@@ -23,7 +23,8 @@ class Base(DeclarativeBase):
 
 
 def _now():
-    return dt.datetime.now(dt.timezone.utc)
+    # naive UTC everywhere: SQLite drops tzinfo; keep single convention
+    return dt.datetime.utcnow()
 
 
 class SourceRegistry(Base):
@@ -42,7 +43,7 @@ class SourceRegistry(Base):
     revision_policy: Mapped[str] = mapped_column(String(128), default="")
     backup_source_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="UNTESTED")
-    last_tested_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tested_at: Mapped[dt.datetime | None] = mapped_column(DateTime())
     notes: Mapped[str] = mapped_column(Text, default="")
 
 
@@ -53,7 +54,7 @@ class RawArtifact(Base):
     artifact_id: Mapped[str] = mapped_column(String(160), unique=True)   # dataset:name
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     path: Mapped[str] = mapped_column(Text)
-    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime())
     url: Mapped[str] = mapped_column(Text)                               # keys stripped
     upstream_id: Mapped[str] = mapped_column(String(128))
     content_type: Mapped[str] = mapped_column(String(64))
@@ -129,7 +130,7 @@ class FactObservation(Base):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     effective_at: Mapped[str] = mapped_column(String(32), index=True)    # date(+-precision) or datetime
     published_at: Mapped[str | None] = mapped_column(String(32), index=True)  # NULL allowed & honest
-    ingested_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ingested_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
     revision_id: Mapped[int | None] = mapped_column(ForeignKey("fact_observation.id"))
     supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("fact_observation.id"))
     quality_status: Mapped[str] = mapped_column(String(16), default="valid")
@@ -157,7 +158,7 @@ class PositionDisclosure(Base):
     disclosure_scope: Mapped[str] = mapped_column(String(24))
     company_action_basis: Mapped[str] = mapped_column(String(128), default="")
     published_at: Mapped[str | None] = mapped_column(String(32))
-    ingested_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ingested_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
     UniqueConstraint("vehicle_key", "asset_key", "report_period", "disclosure_scope",
                     name="uq_position")
 
@@ -169,7 +170,7 @@ class InputSnapshot(Base):
     as_of: Mapped[str] = mapped_column(String(10))
     coverage: Mapped[dict] = mapped_column(JSON)                         # per-dataset coverage stats
     classification_version: Mapped[str] = mapped_column(String(32), default="")
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
 
 
 class ModelRun(Base):
@@ -185,8 +186,8 @@ class ModelRun(Base):
     model_version: Mapped[str] = mapped_column(String(32), default="")
     training_window: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="running")
-    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime())
 
 
 class ScenarioDefinition(Base):
@@ -250,7 +251,7 @@ class ValidationResult(Base):
     threshold: Mapped[float | None] = mapped_column(Float)
     passed: Mapped[bool] = mapped_column(Boolean)
     detail: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
 
 
 class JobRun(Base):
@@ -265,8 +266,8 @@ class JobRun(Base):
     retries: Mapped[int] = mapped_column(Integer, default=0)
     cursor: Mapped[str] = mapped_column(Text, default="")
     data_range: Mapped[str] = mapped_column(String(64), default="")
-    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime())
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime())
     lock_token: Mapped[str] = mapped_column(String(64), default="")      # run lock
     notes: Mapped[str] = mapped_column(Text, default="")
 
