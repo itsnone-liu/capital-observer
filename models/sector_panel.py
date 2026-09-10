@@ -251,7 +251,8 @@ def etf_state_equivalent(session: Session) -> dict:
                 continue
             size_yi = s * navs[d] / 1e8
             for sw, w in idx_ind_w[idx].items():
-                out.setdefault(sw, []).append((d, round(size_yi * w, 1)))
+                # CSI weights come in PERCENT units (sum=100); normalize to fraction.
+                out.setdefault(sw, []).append((d, round(size_yi * w / 100.0, 1)))
     # Aggregate multiple broad ETFs on the same disclosure date before serving.
     # This prevents one quarter from appearing as a row of unrelated blue squares.
     for sw, pts in list(out.items()):

@@ -258,6 +258,7 @@ def get_sector_panels(top: int = Query(40, ge=1, le=100)):
     cache_file = ROOT / "data" / "p0_results" / "timeseries_cache.json"
     ts = _json.loads(cache_file.read_text()) if cache_file.exists() else {}
     groups = _json.loads((ROOT / "configs" / "major_groups.json").read_text())
+    tdx_idx = _json.loads((ROOT / "configs" / "tdx_group_index.json").read_text())
     with _session() as s:
         assets = dict(s.execute(select(Asset.asset_key, Asset.name)
                                 .where(Asset.asset_type == "em_board")).all())
@@ -333,6 +334,36 @@ def get_sector_panels(top: int = Query(40, ge=1, le=100)):
             fund_pts = _sw_sum("fund_exp")
             etf_pts = _sw_sum("etf_state")
 
+            # TDX board-index price line: full-year context incl. Jan-Mar
+            px_pts, amt_pts = [], []
+            for code in tdx_idx.get(gname, []):
+                rows = s.execute(
+                    select(FactObservation.effective_at, FactObservation.metric,
+                           FactObservation.value)
+                    .where(FactObservation.subject_key == f"tdx880:{code}",
+                           FactObservation.metric.in_(("tdx_close", "tdx_amount")),
+                           FactObservation.quality_status == "valid")
+                    .order_by(FactObservation.effective_at)).all()
+                closes = {d: float(v) for d, m, v in rows if m == "tdx_close"}
+                amts = {d: float(v) for d, m, v in rows if m == "tdx_amount"}
+                for d, v in closes.items():
+                    px_pts.append((d, v))
+                for d, v in amts.items():
+                    amt_pts.append((d, v / 1e8))
+            # average when multiple index codes map to one group
+            def _avg(points):
+                acc: dict[str, list] = {}
+                for d, v in points:
+                    acc.setdefault(d, []).append(v)
+                return sorted((d, round(sum(x) / len(x), 2)) for d, x in acc.items())
+            px_series = _avg(px_pts)
+            if px_series:
+                base_px = px_series[0][1] or 1.0
+                px_norm = [(d, round((v / base_px - 1) * 100, 2)) for d, v in px_series]
+            else:
+                px_norm = []
+            amt_series = _avg(amt_pts)
+
             gross = sum(abs(v) for _, v in flow)
             net = sum(v for _, v in flow)
             notes = []
@@ -347,6 +378,8 @@ def get_sector_panels(top: int = Query(40, ge=1, le=100)):
                 notes.append(f"公募暴露 年初{fund_pts[0][1] * 100:.1f}%→现在{fund_pts[-1][1] * 100:.1f}%（Δ{(fund_pts[-1][1] - fund_pts[0][1]) * 100:+.1f}pp）")
             if etf_pts:
                 notes.append(f"ETF等效持仓 {etf_pts[0][1]:.0f}亿→{etf_pts[-1][1]:.0f}亿")
+            if px_norm:
+                notes.append(f"板块指数 年初至今{px_norm[-1][1]:+.1f}%（1-3月由通达信本地数据覆盖）")
 
             panels.append({
                 "board": "GROUP:" + gname, "name": gname, "sw": ",".join(spec.get("sw", [])),
@@ -359,6 +392,10 @@ def get_sector_panels(top: int = Query(40, ge=1, le=100)):
                                   "label": "宽基ETF等效持仓(季度)"},
                     "margin_bal": {"points": margin_pts, "unit": "亿元", "scenario": "FACT",
                                    "label": "板块融资余额"},
+                    "board_px": {"points": px_norm, "unit": "%", "scenario": "FACT",
+                                 "label": "板块指数年内涨跌(TDX)"},
+                    "board_amt": {"points": amt_series, "unit": "亿元", "scenario": "FACT",
+                                  "label": "板块成交额(TDX)"},
                 },
                 "episodes": episodes,
                 "cost_notes": notes,

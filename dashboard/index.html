@@ -200,8 +200,8 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
     catch(e){ grid.innerHTML = '<p class="note">面板API不可达: '+e.message+'</p>'; return; }
     document.getElementById('panels-meta').textContent = `as_of ${P.as_of||'—'} · ${P.coverage}`;
     grid.innerHTML = '';
-    const LINE_COLORS = {main_cum:'#d4a15a', fund_exp:'#3fb28f', etf_state:'#5b8cff', margin_bal:'#9a86c9'};
-    const LINE_NAMES = {main_cum:'主力累计(亿)', fund_exp:'公募暴露(%)', etf_state:'ETF等效持仓变化(%)', margin_bal:'两融余额(亿)'};
+    const LINE_COLORS = {main_cum:'#d4a15a', fund_exp:'#3fb28f', etf_state:'#5b8cff', margin_bal:'#9a86c9', board_px:'#e8ecf4'};
+    const LINE_NAMES = {main_cum:'主力累计(亿)', fund_exp:'公募暴露(%)', etf_state:'ETF等效持仓变化(%)', margin_bal:'两融余额(亿)', board_px:'板块指数涨跌(%)'};
     P.data.forEach((p, pi) => {
       const div = document.createElement('div');
       div.className = 'bpanel';
@@ -230,6 +230,10 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
       // quarterly points must not compress the higher-frequency main chart.
       if(p.lines.margin_bal.points.length) series.push(mk('margin_bal', 0, {step:'end'}));
       if(hasFund) series.push(mk('fund_exp', 1, {showSymbol:true, symbolSize:4}));
+      if(p.lines.board_px && p.lines.board_px.points.length)
+        series.push({name:'板块指数涨跌(%)', type:'line', yAxisIndex:1, showSymbol:false,
+          lineStyle:{width:1.2, color:'#8b93a7', type:'dashed'}, itemStyle:{color:'#8b93a7'},
+          data:p.lines.board_px.points});
       ch.setOption({
         backgroundColor:'transparent',
         tooltip:{trigger:'axis'},
