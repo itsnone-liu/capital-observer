@@ -72,7 +72,7 @@
   <div id="p-panels" class="page">
     <div class="panelbar">
       <h3 style="color:var(--txt)">各板块资金全景（年初至今）</h3>
-      <select id="panel-count"><option value="8">8个板块</option><option value="12" selected>12个板块</option><option value="20">20个板块</option><option value="36" selected>36个板块</option><option value="60">60个板块</option><option value="100">100个板块</option></select>
+      <select id="panel-count"><option value="10">10个板块</option><option value="20">20个板块</option><option value="40" selected>40个主要行业</option><option value="99">全部</option></select>
       <span class="meta" id="panels-meta">加载中…</span>
     </div>
     <div class="panelgrid" id="panel-grid"></div>
@@ -205,7 +205,7 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
     P.data.forEach((p, pi) => {
       const div = document.createElement('div');
       div.className = 'bpanel';
-      div.innerHTML = `<div class="bh"><b>${p.name}</b><span>${p.sw?('申万'+(SWN[p.sw]||p.sw)+'映射'):'未映射'} · ${p.coverage}</span></div>
+      div.innerHTML = `<div class="bh"><b>${p.name}</b><span>${p.coverage}</span></div>
         <div class="bchart" id="bp-${pi}"></div>
         ${p.lines.etf_state.points.length ? `<div class="bchart" id="etf-${pi}" style="height:130px"></div>` : ''}
         <div class="cost">${p.cost_notes.map(c=>'· '+c).join('<br>')}</div>`;

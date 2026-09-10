@@ -248,34 +248,127 @@ def get_aggregate(refresh: bool = Query(False, description="重算（60基金回
 
 
 @app.get("/api/v1/sectors/panels")
-def get_sector_panels(top: int = Query(36, ge=1, le=100)):
-    """Board panels: multi-line capital view per board (main/fund/etf/margin)."""
+def get_sector_panels(top: int = Query(40, ge=1, le=100)):
+    """Major-industry group panels: main/fund/etf/margin lines per group."""
     import json as _json
-    from models.sector_panel import board_universe, sector_panel
+    import numpy as np
+    from models.sector_panel import sector_panel
+    from storage.models import Asset, AssetMembership
+    from sqlalchemy.orm import aliased
     cache_file = ROOT / "data" / "p0_results" / "timeseries_cache.json"
     ts = _json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    groups = _json.loads((ROOT / "configs" / "major_groups.json").read_text())
     with _session() as s:
-        from storage.models import Asset
-        groups = _json.loads((ROOT / "configs" / "major_groups.json").read_text())
-        assets = dict(s.execute(select(Asset.asset_key, Asset.name).where(Asset.asset_type == "em_board")).all())
+        assets = dict(s.execute(select(Asset.asset_key, Asset.name)
+                                .where(Asset.asset_type == "em_board")).all())
+        name2bk: dict[str, str] = {nm: k for k, nm in assets.items()}
+        ma, ga = aliased(Asset), aliased(Asset)
+        member_rows = s.execute(
+            select(ga.asset_key, ma.asset_key)
+            .join(AssetMembership, AssetMembership.group_asset_id == ga.id)
+            .join(ma, AssetMembership.asset_id == ma.id)
+            .where(ga.asset_key.like("em_board:%"))).all()
+        members_by_board: dict[str, set] = {}
+        for gk, sk in member_rows:
+            members_by_board.setdefault(gk.split(":", 1)[1], set()).add(sk)
+
         panels = []
-        # Aggregate detailed EM boards into the user's major industry groups.
-        for gname, aliases in list(groups.items())[:top]:
-            keys = [k for k,nm in assets.items() if nm in aliases]
-            children = [sector_panel(s, k, fund_expo_ts=ts.get("fund_exp"), etf_equiv_ts=ts.get("etf_state")) for k in keys]
-            if not children: continue
-            base = children[0]
-            base["board"] = "GROUP:" + gname; base["name"] = gname
-            for line in ("main_cum", "fund_exp", "etf_state", "margin_bal"):
-                vals = {}
-                for ch in children:
-                    for d,v in ch["lines"][line]["points"]: vals[d] = vals.get(d,0)+v
-                base["lines"][line]["points"] = sorted((d,round(v,2)) for d,v in vals.items())
-            base["coverage"] = f"{len(children)}个细分板块合并"
-            base["cost_notes"] = [f"合并板块：{len(children)}个东财细分行业"] + base["cost_notes"]
-            panels.append(base)
+        for gname, spec in list(groups.items())[:top]:
+            # main-force: sum flow over NON-NESTED anchor boards chosen in config
+            main_bks = [name2bk[n] for n in spec["main"] if n in name2bk]
+            flow_by_date: dict[str, float] = {}
+            rows = s.execute(
+                select(FactObservation.subject_key, FactObservation.effective_at,
+                       FactObservation.value)
+                .where(FactObservation.metric == "sf_main_net",
+                       FactObservation.subject_key.in_([f"bk:{k}" for k in main_bks]),
+                       FactObservation.quality_status == "valid",
+                       FactObservation.effective_at >= f"{dt.date.today().year}-01-01")
+                .order_by(FactObservation.effective_at)).all()
+            for _bk, d, v in rows:
+                flow_by_date[d] = flow_by_date.get(d, 0.0) + float(v) / 1e8
+            flow = sorted(flow_by_date.items())
+            cum, run = [], 0.0
+            for d, v in flow:
+                run += v
+                cum.append((d, round(run, 2)))
+            episodes = []
+            if len(flow) >= 30:
+                vals = np.array([v for _, v in flow])
+                roll = np.convolve(vals, np.ones(20), mode="valid")
+                i_max, i_min = int(np.argmax(roll)), int(np.argmin(roll))
+                episodes = [
+                    {"type": "加仓", "from": flow[i_max][0], "to": flow[i_max + 19][0],
+                     "net_yi": round(float(roll[i_max]), 1)},
+                    {"type": "出货", "from": flow[i_min][0], "to": flow[i_min + 19][0],
+                     "net_yi": round(float(roll[i_min]), 1)},
+                ]
+
+            # margin: union of member STOCKS across boards (dedup at stock level)
+            stocks: set = set()
+            for n in spec.get("margin", []):
+                stocks |= members_by_board.get(n, set())
+            margin_by_date: dict[str, float] = {}
+            if stocks:
+                stock_list = sorted(stocks)
+                for i in range(0, len(stock_list), 900):
+                    chunk = stock_list[i:i + 900]
+                    mrows = s.execute(
+                        select(FactObservation.effective_at, FactObservation.value)
+                        .where(FactObservation.metric == "margin_fin_balance",
+                               FactObservation.subject_key.in_(chunk),
+                               FactObservation.quality_status == "valid")).all()
+                    for d, v in mrows:
+                        margin_by_date[d] = margin_by_date.get(d, 0.0) + float(v) / 1e8
+            margin_pts = [(d, round(v, 1)) for d, v in sorted(margin_by_date.items())]
+
+            # fund / etf: sum precomputed SW-level series over the group's SW set
+            def _sw_sum(key: str) -> list:
+                vals: dict[str, float] = {}
+                for swc in spec.get("sw", []):
+                    for d, v in (ts.get(key) or {}).get(swc, []):
+                        vals[d] = vals.get(d, 0.0) + float(v)
+                return sorted((d, round(v, 4)) for d, v in vals.items())
+
+            fund_pts = _sw_sum("fund_exp")
+            etf_pts = _sw_sum("etf_state")
+
+            gross = sum(abs(v) for _, v in flow)
+            net = sum(v for _, v in flow)
+            notes = []
+            if flow:
+                notes.append(f"年内主力净流入 累计{net:+.0f}亿（毛额{gross:.0f}亿，单日买卖对冲不可见）")
+                notes.append(f"净/毛效率 {net / gross:+.2f}（-1持续出货 … +1持续吸筹）" if gross else "无毛额数据")
+            else:
+                notes.append("主力历史补采中（数据源临时限流）")
+            if margin_pts:
+                notes.append(f"融资余额 {margin_pts[0][1]:.0f}亿→最新{margin_pts[-1][1]:.0f}亿（Δ{margin_pts[-1][1] - margin_pts[0][1]:+.0f}亿）")
+            if fund_pts:
+                notes.append(f"公募暴露 年初{fund_pts[0][1] * 100:.1f}%→现在{fund_pts[-1][1] * 100:.1f}%（Δ{(fund_pts[-1][1] - fund_pts[0][1]) * 100:+.1f}pp）")
+            if etf_pts:
+                notes.append(f"ETF等效持仓 {etf_pts[0][1]:.0f}亿→{etf_pts[-1][1]:.0f}亿")
+
+            panels.append({
+                "board": "GROUP:" + gname, "name": gname, "sw": ",".join(spec.get("sw", [])),
+                "lines": {
+                    "main_cum": {"points": cum, "unit": "亿元", "scenario": "FACT_PROXY",
+                                 "label": "主力大单累计净流入"},
+                    "fund_exp": {"points": fund_pts, "unit": "%", "scenario": "L2",
+                                 "label": "公募行业暴露(月度)"},
+                    "etf_state": {"points": etf_pts, "unit": "亿元", "scenario": "L2_ASSUMPTION",
+                                  "label": "宽基ETF等效持仓(季度)"},
+                    "margin_bal": {"points": margin_pts, "unit": "亿元", "scenario": "FACT",
+                                   "label": "板块融资余额"},
+                },
+                "episodes": episodes,
+                "cost_notes": notes,
+                "assumptions": sector_panel(s, "BK1036")["assumptions"],  # static sidebar
+                "as_of": max([d for d, _ in cum] + [d for d, _ in margin_pts], default=None),
+                "coverage": f"主力{len(cum)}日；两融{len(margin_pts)}时点；公募{len(fund_pts)}点；ETF{len(etf_pts)}点",
+                "warnings": [],
+            })
     return {"data": panels, "as_of": max((p["as_of"] for p in panels if p["as_of"]), default=None),
-            "coverage": f"{len(panels)}个板块面板（优先申万映射板块）",
+            "coverage": f"{len(panels)}个主要行业板块",
             "denominator": "每线口径见 assumptions；主力=大单代理；公募/ETF=估计或假设线",
             "warnings": ["主力线为L1分单代理非识别机构；ETF线为季度点假设折算"]}
 
