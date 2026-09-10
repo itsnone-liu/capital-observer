@@ -83,12 +83,19 @@ class SZSEMarginSummaryAdapter(CollectionAdapter):
         return list(self.dates)
 
     def fetch(self, item: str) -> dict:
-        df = ak.stock_margin_szse(date=item)
+        try:
+            df = ak.stock_margin_szse(date=item)
+        except ValueError:
+            # unpublished yet (akshare chokes on empty upstream) — honest empty
+            return {"payload": "", "url": f"szse:stock_margin_szse/{item}",
+                    "content_type": "text/csv", "empty": True}
         buf = io.StringIO(); df.to_csv(buf, index=False)
         return {"payload": buf.getvalue(), "url": f"szse:stock_margin_szse/{item}",
                 "content_type": "text/csv"}
 
     def parse(self, item: str, raw: dict) -> list[dict]:
+        if raw.get("empty") or not raw["payload"].strip():
+            return []
         df = pd.read_csv(io.StringIO(raw["payload"]))
         if df.empty or df.isna().all().all():
             return []  # not yet published for this date — honest empty, retry at cron
