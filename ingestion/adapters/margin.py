@@ -90,8 +90,8 @@ class SZSEMarginSummaryAdapter(CollectionAdapter):
 
     def parse(self, item: str, raw: dict) -> list[dict]:
         df = pd.read_csv(io.StringIO(raw["payload"]))
-        if df.empty:
-            raise RuntimeError(f"SZSE empty for {item}")
+        if df.empty or df.isna().all().all():
+            return []  # not yet published for this date — honest empty, retry at cron
         row = df.iloc[0]
         mapping = {"融资余额": "margin_fin_balance", "融资买入额": "margin_fin_buy",
                    "融券余量": "margin_sec_volume", "融券余额": "margin_sec_balance",
