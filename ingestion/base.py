@@ -145,8 +145,12 @@ def archive_artifact(session: Session, dataset: str, name: str, payload: bytes |
     if existing:
         if existing.content_hash == chash:
             return existing  # idempotent: identical content
-        # same id, new content -> versioned artifact id
+        # same id, new content -> versioned artifact id (dedup-checked)
         art_id = f"{dataset}:{name}:{chash[:8]}"
+        vexist = session.execute(
+            select(RawArtifact).where(RawArtifact.artifact_id == art_id)).scalar_one_or_none()
+        if vexist is not None:
+            return vexist
     d = root / dataset
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{name}__{chash[:10]}.raw"
