@@ -79,7 +79,7 @@
     <div class="panel" style="margin-top:10px"><h3>假设条件（全板块通用）</h3>
       <table id="t-assump"></table>
     </div>
-    <p class="note">每图双轴：左=亿元（主力累计/ETF等效/两融余额），右=%（公募暴露）。底色=20日主力净流入极值窗（红加仓/绿出货）。估计线假设见上表；缺数据的线如实不显示。</p>
+    <p class="note">每图双轴：左=亿元（主力累计/两融余额），右=%（公募暴露/ETF等效持仓相对首点变化）。底色=20日主力净流入极值窗（红加仓/绿出货）。估计线假设见上表；缺数据的线如实不显示。</p>
   </div>
   <div id="p-flows" class="page">
     <div class="panel"><h3>首批ETF季度净申赎（份额口径，最新4期）</h3><table id="t-flows"></table></div>
@@ -201,7 +201,7 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
     document.getElementById('panels-meta').textContent = `as_of ${P.as_of||'—'} · ${P.coverage}`;
     grid.innerHTML = '';
     const LINE_COLORS = {main_cum:'#d4a15a', fund_exp:'#3fb28f', etf_state:'#5b8cff', margin_bal:'#9a86c9'};
-    const LINE_NAMES = {main_cum:'主力累计(亿)', fund_exp:'公募暴露(%)', etf_state:'ETF等效(亿)', margin_bal:'两融余额(亿)'};
+    const LINE_NAMES = {main_cum:'主力累计(亿)', fund_exp:'公募暴露(%)', etf_state:'ETF等效持仓变化(%)', margin_bal:'两融余额(亿)'};
     P.data.forEach((p, pi) => {
       const div = document.createElement('div');
       div.className = 'bpanel';
@@ -213,13 +213,19 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
       const ch = echarts.init(el);
       const series = [];
       const hasFund = p.lines.fund_exp.points.length>0, hasEtf = p.lines.etf_state.points.length>0;
-      const mk = (key, yAxisIndex, extra={}) => ({
-        name: LINE_NAMES[key], type: 'line', yAxisIndex, showSymbol: false,
-        lineStyle:{width:1.6, color:LINE_COLORS[key]}, itemStyle:{color:LINE_COLORS[key]},
-        data: p.lines[key].points.map(([d,v])=>[d, key==='fund_exp'? +(v*100).toFixed(2): v]), ...extra });
+      const mk = (key, yAxisIndex, extra={}) => {
+        const pts = p.lines[key].points;
+        // ETF line is normalized to change from first disclosure point, so its
+        // scale cannot flatten the other capital lines. The absolute level is
+        // retained in the tooltip/assumption text, while direction is visual.
+        let base = key==='etf_state' && pts.length ? pts[0][1] : 0;
+        return {name: LINE_NAMES[key], type:'line', yAxisIndex, showSymbol:false,
+          lineStyle:{width:1.6, color:LINE_COLORS[key]}, itemStyle:{color:LINE_COLORS[key]},
+          data: pts.map(([d,v])=>[d, key==='fund_exp' ? +(v*100).toFixed(2) : key==='etf_state' ? +((v/base-1)*100).toFixed(2) : v]), ...extra};
+      };
       if(p.lines.main_cum.points.length) series.push(mk('main_cum', 0, {
         markArea:{silent:true, data:(p.episodes||[]).map(ep=>[{xAxis:ep.from, itemStyle:{color: ep.type==='加仓'?'rgba(224,86,100,0.09)':'rgba(63,178,143,0.10)'}, name:ep.type},{xAxis:ep.to}])}}));
-      if(hasEtf) series.push(mk('etf_state', 0, {step:'end', showSymbol:true, symbolSize:5}));
+      if(hasEtf) series.push(mk('etf_state', 1, {step:'end', showSymbol:true, symbolSize:5}));
       if(p.lines.margin_bal.points.length) series.push(mk('margin_bal', 0, {step:'end'}));
       if(hasFund) series.push(mk('fund_exp', 1, {showSymbol:true, symbolSize:4}));
       ch.setOption({

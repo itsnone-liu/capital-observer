@@ -248,7 +248,11 @@ def etf_state_equivalent(session: Session) -> dict:
             size_yi = s * navs[d] / 1e8
             for sw, w in idx_ind_w[idx].items():
                 out.setdefault(sw, []).append((d, round(size_yi * w, 1)))
-    for sw in out:
-        out[sw].sort()
-        # de-dup per date (multiple ETFs same date summed later in UI note)
+    # Aggregate multiple broad ETFs on the same disclosure date before serving.
+    # This prevents one quarter from appearing as a row of unrelated blue squares.
+    for sw, pts in list(out.items()):
+        by_date: dict[str, float] = {}
+        for d, value in pts:
+            by_date[d] = by_date.get(d, 0.0) + float(value)
+        out[sw] = sorted((d, round(v, 1)) for d, v in by_date.items())
     return out
