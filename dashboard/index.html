@@ -207,6 +207,7 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
       div.className = 'bpanel';
       div.innerHTML = `<div class="bh"><b>${p.name}</b><span>${p.sw?('申万'+(SWN[p.sw]||p.sw)+'映射'):'未映射'} · ${p.coverage}</span></div>
         <div class="bchart" id="bp-${pi}"></div>
+        ${p.lines.etf_state.points.length ? `<div class="bchart" id="etf-${pi}" style="height:130px"></div>` : ''}
         <div class="cost">${p.cost_notes.map(c=>'· '+c).join('<br>')}</div>`;
       grid.appendChild(div);
       const el = document.getElementById(`bp-${pi}`);
@@ -225,7 +226,8 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
       };
       if(p.lines.main_cum.points.length) series.push(mk('main_cum', 0, {
         markArea:{silent:true, data:(p.episodes||[]).map(ep=>[{xAxis:ep.from, itemStyle:{color: ep.type==='加仓'?'rgba(224,86,100,0.09)':'rgba(63,178,143,0.10)'}, name:ep.type},{xAxis:ep.to}])}}));
-      if(hasEtf) series.push(mk('etf_state', 1, {step:'end', showSymbol:true, symbolSize:5}));
+      // ETF disclosure series is deliberately rendered in its own mini-chart;
+      // quarterly points must not compress the higher-frequency main chart.
       if(p.lines.margin_bal.points.length) series.push(mk('margin_bal', 0, {step:'end'}));
       if(hasFund) series.push(mk('fund_exp', 1, {showSymbol:true, symbolSize:4}));
       ch.setOption({
@@ -240,6 +242,12 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
         ],
         series});
       charts['bp-'+pi] = ch;
+      if(hasEtf){
+        const ec=echarts.init(document.getElementById(`etf-${pi}`));
+        const ep=p.lines.etf_state.points, eb=ep[0][1]||1;
+        ec.setOption({title:{text:'配置盘/国家队代理（季度披露，独立尺度）',textStyle:{color:'#7b8494',fontSize:11},left:4,top:2},grid:{left:48,right:12,top:28,bottom:24},tooltip:{trigger:'axis'},xAxis:{type:'time',axisLabel:{color:'#7b8494',fontSize:9}},yAxis:{type:'value',axisLabel:{color:'#5b8cff',fontSize:9,formatter:'{value}%'}},series:[{type:'line',name:'ETF等效持仓变化',data:ep.map(([d,v])=>[d,+((v/eb-1)*100).toFixed(2)]),showSymbol:true,symbolSize:5,step:'end',lineStyle:{color:'#5b8cff'},itemStyle:{color:'#5b8cff'}}]});
+        charts['etf-'+pi]=ec;
+      }
     });
     const at = document.getElementById('t-assump');
     const asmp = (P.data[0]||{}).assumptions || [];
