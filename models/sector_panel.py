@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session
 from storage.models import Asset, FactObservation
 
 ROOT = Path(__file__).resolve().parents[1]
+MAJOR = json.loads((ROOT / "configs" / "major_boards.json").read_text())
+MAJOR_NAMES = set(MAJOR["exact"])
 SW_EM = json.loads((ROOT / "configs" / "sw_em_map.json").read_text())
 EM_SW = {}
 for sw, ems in SW_EM.items():
@@ -73,8 +75,10 @@ def board_universe(session: Session) -> list[dict]:
         nm = names.get(bk, "")
         out.append({"board": bk, "name": nm, "days": n,
                     "sw": EM_SW.get(nm.replace("行业", "").replace("Ⅱ", ""), "")})
-    out.sort(key=lambda x: -x["days"])
-    return out
+    # Main view uses the user's major-board whitelist; tiny sub-industries stay hidden.
+    major = [x for x in out if x["name"] in MAJOR_NAMES]
+    major.sort(key=lambda x: -x["days"])
+    return major or sorted(out, key=lambda x: -x["days"])
 
 
 def sector_panel(session: Session, bk: str, fund_expo_ts: dict | None = None,

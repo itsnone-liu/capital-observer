@@ -248,7 +248,7 @@ def get_aggregate(refresh: bool = Query(False, description="重算（60基金回
 
 
 @app.get("/api/v1/sectors/panels")
-def get_sector_panels(top: int = Query(12, ge=1, le=40)):
+def get_sector_panels(top: int = Query(36, ge=1, le=100)):
     """Board panels: multi-line capital view per board (main/fund/etf/margin)."""
     import json as _json
     from models.sector_panel import board_universe, sector_panel
