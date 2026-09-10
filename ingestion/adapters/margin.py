@@ -69,6 +69,47 @@ class SSEMarginSummaryAdapter(CollectionAdapter):
         return recs
 
 
+class SZSEMarginSummaryAdapter(CollectionAdapter):
+    """SZSE market margin summary — per-day API, values in 亿元."""
+    source_id = "szse.margin_summary"
+    upstream_id = "szse.cn"
+    parser_version = "v1"
+    min_interval = 2.0
+
+    def __init__(self, dates: list[str]):
+        self.dates = dates  # YYYYMMDD
+
+    def discover(self) -> Iterable[str]:
+        return list(self.dates)
+
+    def fetch(self, item: str) -> dict:
+        df = ak.stock_margin_szse(date=item)
+        buf = io.StringIO(); df.to_csv(buf, index=False)
+        return {"payload": buf.getvalue(), "url": f"szse:stock_margin_szse/{item}",
+                "content_type": "text/csv"}
+
+    def parse(self, item: str, raw: dict) -> list[dict]:
+        df = pd.read_csv(io.StringIO(raw["payload"]))
+        if df.empty:
+            raise RuntimeError(f"SZSE empty for {item}")
+        row = df.iloc[0]
+        mapping = {"融资余额": "margin_fin_balance", "融资买入额": "margin_fin_buy",
+                   "融券余量": "margin_sec_volume", "融券余额": "margin_sec_balance",
+                   "融券卖出量": "margin_sec_sell", "融资融券余额": "margin_total_balance"}
+        recs = []
+        for col, metric in mapping.items():
+            v = row.get(col)
+            if pd.notna(v):
+                unit = "shares" if metric == "margin_sec_volume" else "yuan"
+                val = float(v) * (1e4 if unit == "shares" else 1e8)  # 亿元/万份 -> yuan/shares
+                recs.append(dict(kind="fact", table="fact_observation",
+                                 subject_key="market:SZSE", asset_key=None,
+                                 metric=metric, value=val, unit=unit,
+                                 currency="CNY", effective_at=item,
+                                 published_at=item, quality_status="valid"))
+        return recs
+
+
 class MarginDetailDayAdapter(CollectionAdapter):
     """Per-underlying margin detail for ONE day, both exchanges.
 

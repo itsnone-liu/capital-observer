@@ -214,7 +214,9 @@ class JobRunner:
                             from storage.ingest import write_records
                             with Session(self.engine) as sw:
                                 wstats = write_records(sw, good)
-                            summary.setdefault("writes", {}).update(wstats)
+                            agg = summary.setdefault("writes", {})
+                            for k, v in wstats.items():
+                                agg[k] = agg.get(k, 0) + v  # accumulate per item
                         summary["ok"] += 1
                         done.append(item)
                         break

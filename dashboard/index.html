@@ -137,12 +137,12 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   // ---------- margin ----------
   try {
     const mv = await j('/api/v1/margin/summary'), mh = await j('/api/v1/margin/history?days=250');
-    const d = mv.data;
-    document.getElementById('mg-cards').innerHTML = `
-      <div class="card"><div class="t">融资余额(上交所)</div><div class="v">${(d.latest_balance_yuan/1e12).toFixed(2)}万亿</div><div class="sub">as_of ${mv.as_of}</div></div>
-      <div class="card"><div class="t">20日变化</div><div class="v ${cls(d.balance_chg_20d_yuan)}">${fmtYi(d.balance_chg_20d_yuan)}</div><div class="sub">窗口首尾差</div></div>
-      <div class="card"><div class="t">5日变化</div><div class="v ${cls(d.balance_chg_5d_yuan)}">${fmtYi(d.balance_chg_5d_yuan)}</div><div class="sub">窗口首尾差</div></div>
-      <div class="card"><div class="t">20日融资买入合计</div><div class="v">${fmtYi(d.buy_sum_20d_yuan)}</div><div class="sub">买入额加总</div></div>`;
+    const cards = [];
+    for (const [mkt, d] of Object.entries(mv.data || {})) {
+      if (!d) continue;
+      cards.push(`<div class="card"><div class="t">融资余额·${mkt==='SSE'?'上交所':'深交所'}</div><div class="v">${(d.latest_balance_yuan/1e12).toFixed(2)}万亿</div><div class="sub">as_of ${d.as_of} · 20日 <span class="${cls(d.balance_chg_20d_yuan)}">${fmtYi(d.balance_chg_20d_yuan)}</span></div></div>`);
+    }
+    document.getElementById('mg-cards').innerHTML = cards.join('');
     const c = chart('c-margin');
     if(c && mh.data.dates.length){
       c.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},

@@ -123,27 +123,31 @@ def sector_ranking(session: Session, lookbacks: tuple[int, ...] = (5, 20, 60),
 
 
 def margin_view(session: Session, windows: tuple[int, ...] = (1, 5, 20, 60)) -> dict:
-    """Market margin balance/buy series + changes (SSE exchange-published).
+    """Market margin balance/buy series + changes, SSE and SZSE listed SEPARATELY.
 
-    SSE only in v1 (SZSE summary is per-day loop — merged when collected).
-    No ratio computed without mcap denominator (explicitly None then).
+    Design rule: different-basis figures are never summed into one number.
     """
-    bal = _facts_df(session, "market:SSE", "margin_fin_balance")
-    buy = _facts_df(session, "market:SSE", "margin_fin_buy")
-    if bal.empty:
-        return {"data": None, "as_of": None, "coverage": "0", "denominator": "",
-                "warnings": ["上交所两融汇总无数据"]}
-    d = {"latest_balance_yuan": float(bal["value"].iloc[-1]),
-         "as_of": str(bal["date"].iloc[-1])}
-    for n in windows:
-        if len(bal) > n:
-            d[f"balance_chg_{n}d_yuan"] = float(bal["value"].iloc[-1] - bal["value"].iloc[-1 - n])
-        if not buy.empty and len(buy) > n:
-            d[f"buy_sum_{n}d_yuan"] = float(buy["value"].tail(n).sum())
-    d["obs_days"] = int(len(bal))
-    return {"data": d, "as_of": d["as_of"], "coverage": "SSE only (SZSE待并)",
-            "denominator": "上交所披露余额原值（元）；变化=窗口首尾差",
-            "warnings": ["SZSE 汇总为逐日接口，v1 仅上交所口径，勿当作全市场"]}
+    out, warns = {}, []
+    for mkt in ("SSE", "SZSE"):
+        bal = _facts_df(session, f"market:{mkt}", "margin_fin_balance")
+        buy = _facts_df(session, f"market:{mkt}", "margin_fin_buy")
+        if bal.empty:
+            warns.append(f"{mkt} 无数据")
+            out[mkt] = None
+            continue
+        d = {"latest_balance_yuan": float(bal["value"].iloc[-1]),
+             "as_of": str(bal["date"].iloc[-1]), "obs_days": int(len(bal))}
+        for n in windows:
+            if len(bal) > n:
+                d[f"balance_chg_{n}d_yuan"] = float(bal["value"].iloc[-1] - bal["value"].iloc[-1 - n])
+            if not buy.empty and len(buy) > n:
+                d[f"buy_sum_{n}d_yuan"] = float(buy["value"].tail(n).sum())
+        out[mkt] = d
+    main = out.get("SSE") or out.get("SZSE") or {}
+    return {"data": out, "as_of": main.get("as_of"),
+            "coverage": "、".join(f"{k}:{v['obs_days']}日" for k, v in out.items() if v),
+            "denominator": "各交易所披露原值（元）；变化=窗口首尾差；两所不相加",
+            "warnings": warns or ["SSE与SZSE分列展示（口径独立）"]}
 
 
 def etf_size_decomposition(session: Session, code: str) -> dict:
