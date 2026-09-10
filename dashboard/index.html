@@ -30,6 +30,15 @@
   th { color:var(--dim); font-weight:500; } td:first-child, th:first-child { text-align:left; }
   .note { color:var(--dim); font-size:12px; margin-top:10px; }
   .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; border:1px solid var(--line); color:var(--dim); margin-left:8px; }
+  .panelgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(480px,1fr)); gap:12px; }
+  .bpanel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .bpanel .bh { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
+  .bpanel .bh b { font-size:14px; } .bpanel .bh span { font-size:11px; color:var(--dim); }
+  .bpanel .bchart { width:100%; height:230px; }
+  .bpanel .cost { font-size:11px; color:var(--dim); line-height:1.6; border-top:1px dashed var(--line); padding-top:6px; margin-top:4px; }
+  .panelbar { display:flex; gap:14px; align-items:center; margin-bottom:10px; }
+  .panelbar select { background:var(--panel); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
+  .leg { display:inline-block; margin-right:10px; font-size:11px; color:var(--dim); }
 </style>
 </head>
 <body>
@@ -41,6 +50,7 @@
 <nav>
   <button data-p="overview" class="on">大盘总览</button>
   <button data-p="sectors">板块对比</button>
+  <button data-p="panels">板块全景</button>
   <button data-p="flows">ETF申赎</button>
   <button data-p="funds">公募估计</button>
   <button data-p="margin">两融</button>
@@ -58,6 +68,18 @@
   <div id="p-sectors" class="page">
     <div class="panel"><h3>申万一级行业：20日收益排名（31行业全量）</h3><div id="c-sector" class="chart" style="height:640px"></div></div>
     <p class="note" id="sector-note"></p>
+  </div>
+  <div id="p-panels" class="page">
+    <div class="panelbar">
+      <h3 style="color:var(--txt)">各板块资金全景（年初至今）</h3>
+      <select id="panel-count"><option value="8">8个板块</option><option value="12" selected>12个板块</option><option value="20">20个板块</option><option value="36">36个板块</option></select>
+      <span class="meta" id="panels-meta">加载中…</span>
+    </div>
+    <div class="panelgrid" id="panel-grid"></div>
+    <div class="panel" style="margin-top:10px"><h3>假设条件（全板块通用）</h3>
+      <table id="t-assump"></table>
+    </div>
+    <p class="note">每图双轴：左=亿元（主力累计/ETF等效/两融余额），右=%（公募暴露）。底色=20日主力净流入极值窗（红加仓/绿出货）。估计线假设见上表；缺数据的线如实不显示。</p>
   </div>
   <div id="p-flows" class="page">
     <div class="panel"><h3>首批ETF季度净申赎（份额口径，最新4期）</h3><table id="t-flows"></table></div>
@@ -169,6 +191,61 @@ const SWN = {};  // SW industry code -> name, filled by sectors fetch
         `<b style="color:var(--txt)">情景</b>：${ag.scenario_id} · 计算时间 ${ag.as_of||'—'}`;
     }
   } catch(e){}
+
+  // ---------- sector panels (multi-line per board) ----------
+  async function loadPanels(n){
+    const grid = document.getElementById('panel-grid');
+    grid.innerHTML = '<p class="note">加载中（含估计计算）…</p>';
+    let P; try { P = await j(`/api/v1/sectors/panels?top=${n}`); }
+    catch(e){ grid.innerHTML = '<p class="note">面板API不可达: '+e.message+'</p>'; return; }
+    document.getElementById('panels-meta').textContent = `as_of ${P.as_of||'—'} · ${P.coverage}`;
+    grid.innerHTML = '';
+    const LINE_COLORS = {main_cum:'#d4a15a', fund_exp:'#3fb28f', etf_state:'#5b8cff', margin_bal:'#9a86c9'};
+    const LINE_NAMES = {main_cum:'主力累计(亿)', fund_exp:'公募暴露(%)', etf_state:'ETF等效(亿)', margin_bal:'两融余额(亿)'};
+    P.data.forEach((p, pi) => {
+      const div = document.createElement('div');
+      div.className = 'bpanel';
+      div.innerHTML = `<div class="bh"><b>${p.name}</b><span>${p.sw?('申万'+(SWN[p.sw]||p.sw)+'映射'):'未映射'} · ${p.coverage}</span></div>
+        <div class="bchart" id="bp-${pi}"></div>
+        <div class="cost">${p.cost_notes.map(c=>'· '+c).join('<br>')}</div>`;
+      grid.appendChild(div);
+      const el = document.getElementById(`bp-${pi}`);
+      const ch = echarts.init(el);
+      const series = [];
+      const hasFund = p.lines.fund_exp.points.length>0, hasEtf = p.lines.etf_state.points.length>0;
+      const mk = (key, yAxisIndex, extra={}) => ({
+        name: LINE_NAMES[key], type: 'line', yAxisIndex, showSymbol: false,
+        lineStyle:{width:1.6, color:LINE_COLORS[key]}, itemStyle:{color:LINE_COLORS[key]},
+        data: p.lines[key].points.map(([d,v])=>[d, key==='fund_exp'? +(v*100).toFixed(2): v]), ...extra });
+      if(p.lines.main_cum.points.length) series.push(mk('main_cum', 0, {
+        markArea:{silent:true, data:(p.episodes||[]).map(ep=>[{xAxis:ep.from, itemStyle:{color: ep.type==='加仓'?'rgba(224,86,100,0.09)':'rgba(63,178,143,0.10)'}, name:ep.type},{xAxis:ep.to}])}}));
+      if(hasEtf) series.push(mk('etf_state', 0, {step:'end', showSymbol:true, symbolSize:5}));
+      if(p.lines.margin_bal.points.length) series.push(mk('margin_bal', 0, {step:'end'}));
+      if(hasFund) series.push(mk('fund_exp', 1, {showSymbol:true, symbolSize:4}));
+      ch.setOption({
+        backgroundColor:'transparent',
+        tooltip:{trigger:'axis'},
+        legend:{textStyle:{color:'#7b8494', fontSize:10}, itemWidth:14, top:0},
+        grid:{left:56, right: hasFund?44:16, top:26, bottom:34},
+        xAxis:{type:'time', axisLabel:{color:'#7b8494', fontSize:10, rotate:30}},
+        yAxis:[
+          {type:'value', scale:true, axisLabel:{color:'#7b8494', fontSize:10}, splitLine:{lineStyle:{color:'#232a3a'}}},
+          {type:'value', scale:true, axisLabel:{color:'#3fb28f', fontSize:10, formatter:'{value}%'}, splitLine:{show:false}}
+        ],
+        series});
+      charts['bp-'+pi] = ch;
+    });
+    const at = document.getElementById('t-assump');
+    const asmp = (P.data[0]||{}).assumptions || [];
+    at.innerHTML = '<tr><th style="text-align:left">线</th><th style="text-align:left">情景</th><th style="text-align:left">假设</th></tr>' +
+      asmp.map(a=>`<tr><td style="color:${({FACT:'#d7dde8','FACT代理':'#d4a15a','L2估计':'#3fb28f','L2假设':'#5b8cff'})[a[1]]||'#d7dde8'}">${a[0]}</td><td>${a[1]}</td><td style="color:var(--dim)">${a[2]}</td></tr>`).join('');
+    Object.values(charts).forEach(c=>c.resize());
+  }
+  document.getElementById('panel-count').onchange = e => loadPanels(+e.target.value);
+  document.querySelectorAll('nav button').forEach(b=>{ const old=b.onclick; b.onclick=()=>{
+    if(b.dataset.p==='panels' && !document.getElementById('panel-grid').children.length) loadPanels(+document.getElementById('panel-count').value);
+    old();
+  };});
 
   // ---------- margin ----------
   try {

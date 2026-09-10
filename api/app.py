@@ -247,6 +247,39 @@ def get_aggregate(refresh: bool = Query(False, description="重算（60基金回
     return out
 
 
+@app.get("/api/v1/sectors/panels")
+def get_sector_panels(top: int = Query(12, ge=1, le=40)):
+    """Board panels: multi-line capital view per board (main/fund/etf/margin)."""
+    import json as _json
+    from models.sector_panel import board_universe, sector_panel
+    cache_file = ROOT / "data" / "p0_results" / "timeseries_cache.json"
+    ts = _json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    with _session() as s:
+        uni = board_universe(s)
+        # prefer boards with SW mapping + most days
+        mapped = [b for b in uni if b["sw"]]
+        pick = (mapped or uni)[:top]
+        panels = [sector_panel(s, b["board"],
+                               fund_expo_ts=ts.get("fund_exp"),
+                               etf_equiv_ts=ts.get("etf_state")) for b in pick]
+    return {"data": panels, "as_of": max((p["as_of"] for p in panels if p["as_of"]), default=None),
+            "coverage": f"{len(panels)}个板块面板（优先申万映射板块）",
+            "denominator": "每线口径见 assumptions；主力=大单代理；公募/ETF=估计或假设线",
+            "warnings": ["主力线为L1分单代理非识别机构；ETF线为季度点假设折算"]}
+
+
+@app.get("/api/v1/sectors/{bk}/panel")
+def get_one_panel(bk: str):
+    import json as _json
+    from models.sector_panel import sector_panel
+    cache_file = ROOT / "data" / "p0_results" / "timeseries_cache.json"
+    ts = _json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    with _session() as s:
+        v = sector_panel(s, bk, fund_expo_ts=ts.get("fund_exp"),
+                         etf_equiv_ts=ts.get("etf_state"))
+    return v
+
+
 @app.get("/api/v1/quality/status")
 def get_quality():
     with _session() as s:

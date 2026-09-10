@@ -45,7 +45,7 @@ def _daily_returns(series: dict[str, float], start: str) -> dict[str, float]:
 def nowcast_fund(session: Session, fund_code: str, industries: list[str],
                  prior: dict[str, float] | None = None,
                  window: int = 120, equity_range: tuple[float, float] = (0.5, 0.95),
-                 lambda_prior: float = 20.0) -> dict:
+                 lambda_prior: float = 20.0, end_date: str | None = None) -> dict:
     """Return industry-exposure estimate + fit diagnostics.
 
     prior: latest disclosed industry weights {industry_code: weight}
@@ -56,7 +56,7 @@ def nowcast_fund(session: Session, fund_code: str, industries: list[str],
     if len(nav) < window // 2:
         return {"status": "insufficient_nav", "obs": len(nav)}
     fr = _daily_returns(nav, "0000-01-01")
-    dates_all = sorted(fr)
+    dates_all = sorted(d for d in fr if end_date is None or d <= end_date)
     use_dates = dates_all[-window:]
     X_cols = {}
     for ind in industries:
