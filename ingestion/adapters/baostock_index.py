@@ -59,14 +59,14 @@ class BaoStockIndexBarsAdapter(CollectionAdapter):
                 continue
             d = str(row["date"])
             recs.append(dict(kind="fact", table="fact_observation",
-                             subject_key=f"index:{item}", asset_key=None,
+                             subject_key=f"index:{item}", asset_key=item,
                              metric="index_close", value=float(row["close"]),
                              unit="points", currency="CNY", effective_at=d,
                              published_at=d, quality_status="valid",
                              source_id=self.source_id))
             if pd.notna(row.get("amount")) and str(row["amount"]).strip():
                 recs.append(dict(kind="fact", table="fact_observation",
-                                 subject_key=f"index:{item}", asset_key=None,
+                                 subject_key=f"index:{item}", asset_key=item,
                                  metric="index_amount", value=float(row["amount"]),
                                  unit="yuan", currency="CNY", effective_at=d,
                                  published_at=d, quality_status="valid",
