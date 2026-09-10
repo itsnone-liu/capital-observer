@@ -108,6 +108,31 @@ def get_etf_flows(periods: int = Query(4, ge=1, le=12)):
             "published_cutoff": latest_periods[0] if latest_periods else None}
 
 
+@app.get("/api/v1/cost/fund/{fund}")
+def get_fund_cost(fund: str, impact: str = Query("base", pattern="^(low|base|high)$"),
+                  aum_yi: float = Query(100.0, gt=0, le=20000)):
+    """Rebalance cost estimate between last two disclosed industry weights."""
+    from models.cost import fund_rebalance_cost
+    with _session() as s:
+        rows = s.execute(
+            select(FactObservation.asset_key, FactObservation.value,
+                   FactObservation.effective_at)
+            .where(FactObservation.subject_key == f"fund:{fund}",
+                   FactObservation.metric == "fund_industry_weight",
+                   FactObservation.quality_status == "valid")
+            .order_by(FactObservation.effective_at.desc())).all()
+        by_q: dict[str, dict[str, float]] = {}
+        for a, v, q in rows:
+            by_q.setdefault(str(q), {})[a.split(":", 1)[-1]] = float(v)
+        qs = sorted(by_q, reverse=True)
+        if len(qs) < 2:
+            raise HTTPException(404, f"need >=2 disclosure periods for {fund}, have {len(qs)}")
+        v = fund_rebalance_cost(s, fund, by_q[qs[1]], by_q[qs[0]],
+                                aum_yi * 1e8, impact_scenario=impact)
+    v["as_of"] = qs[0]
+    return v
+
+
 @app.get("/api/v1/etf/{code}/structure")
 def get_etf_structure(code: str):
     if not (len(code) == 6 and code.isdigit()):
