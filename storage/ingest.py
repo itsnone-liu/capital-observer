@@ -26,11 +26,14 @@ def _ensure_group_asset(session: Session, group_key: str) -> Asset:
 
 
 def _existing_fact(session: Session, r: dict):
+    ak = r.get("asset_key")
     return session.execute(
         select(FactObservation)
         .where(FactObservation.subject_key == r["subject_key"],
                FactObservation.metric == r["metric"],
                FactObservation.effective_at == r["effective_at"],
+               FactObservation.asset_key.is_(None) if ak is None
+               else FactObservation.asset_key == ak,
                FactObservation.quality_status != "failed")
         .order_by(FactObservation.id.desc())
     ).scalars().first()

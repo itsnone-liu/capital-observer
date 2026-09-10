@@ -1,0 +1,35 @@
+{
+  "L1": {
+    "name": "谨慎",
+    "share_price_basis": "quarter_end_nav",
+    "turnover_assumption": "hold_to_next_disclosure",
+    "range_type": "identification_bound",
+    "notes": "有限持仓延续、样本内估计、宽区间；不做任何日内推断",
+    "invalidation": "基金类型变更/招募说明书投资范围变更"
+  },
+  "L2": {
+    "name": "基准",
+    "turnover_assumption": "moderate_rebalance_within_type",
+    "retention_window": 20,
+    "range_type": "scenario_envelope",
+    "notes": "中等换手、约束调仓、适度持仓保留；行业权重约束在基金类型允许范围内",
+    "invalidation": "样本外验证显示暴露MAE高于持仓延续基线"
+  },
+  "L3": {
+    "name": "扩展",
+    "group_extrapolation": "by_fund_type",
+    "turnover_assumption": "wide_grid",
+    "turnover_grid": [
+      0.05,
+      0.15,
+      0.3
+    ],
+    "concordance_grid": [
+      "weak",
+      "medium"
+    ],
+    "range_type": "scenario_envelope",
+    "notes": "分组外推与更宽换手/同向性假设网格；未覆盖资金不默认与样本一致",
+    "invalidation": "证据不足时不生成本档（允许缺档）"
+  }
+}

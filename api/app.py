@@ -147,6 +147,64 @@ def get_margin_history(days: int = Query(120, ge=10, le=2000)):
     }
 
 
+SW_INDUSTRIES = ["801010", "801030", "801040", "801050", "801080", "801110", "801120",
+                 "801130", "801140", "801150", "801160", "801170", "801180", "801200",
+                 "801210", "801230", "801710", "801720", "801730", "801740", "801750",
+                 "801760", "801770", "801780", "801790", "801880", "801890", "801950",
+                 "801960", "801970", "801980"]
+
+
+@app.get("/api/v1/scenarios/compare")
+def get_scenarios(fund: str = Query(..., min_length=6, max_length=6)):
+    """FACT (disclosure) vs L1 (continuation) vs L2 (constrained regression)."""
+    from models.nowcast import nowcast_fund
+    with _session() as s:
+        disc = s.execute(
+            select(FactObservation.asset_key, FactObservation.value,
+                   FactObservation.effective_at)
+            .where(FactObservation.subject_key == f"fund:{fund}",
+                   FactObservation.metric == "fund_industry_weight",
+                   FactObservation.quality_status == "valid")
+            .order_by(FactObservation.effective_at.desc())).all()
+        l2 = nowcast_fund(s, fund, SW_INDUSTRIES, prior=None, window=120)
+    if not disc and l2.get("status") != "ok":
+        raise HTTPException(404, f"no data for fund {fund}")
+    latest_q = max((d[2] for d in disc), default=None)
+    fact_rows = [{"industry": a.split(":", 1)[-1], "weight": v}
+                 for a, v, q in disc if q == latest_q and v > 0]
+    l1 = {
+        "scenario": "L1_cautious",
+        "industry_exposure": {r["industry"]: round(r["weight"], 4) for r in fact_rows},
+        "range_type": "identification_bound",
+        "notes": "持仓延续：最近披露行业配置直接外推；未披露行业不设零",
+        "invalidation": "新披露到达或基金类型变更",
+    }
+    return {
+        "data": {
+            "fund": fund,
+            "FACT_disclosure": {"period": latest_q,
+                                "industry_exposure": {r["industry"]: round(r["weight"], 4) for r in fact_rows}},
+            "L1_cautious": l1,
+            "L2_baseline": l2 if l2.get("status") == "ok" else {"status": l2.get("status")},
+            "L3_extended": {"status": "not_generated",
+                            "reason": "L3网格需要完整持仓披露样本（证据不足不生成，设计sec.8）"},
+        },
+        "as_of": l2.get("last_date") or latest_q,
+        "coverage": f"披露{len(fact_rows)}行业@{latest_q}；L2窗口{l2.get('window_days')}日",
+        "denominator": "披露口径=证监会大类行业；L2=申万一级近似（两口径并列不混算）",
+        "warnings": l2.get("quality_flags", []),
+        "published_cutoff": latest_q,
+    }
+
+
+@app.get("/api/v1/diffusion")
+def get_diffusion(window: int = Query(20, ge=5, le=120)):
+    from scenarios.engine import industry_diffusion
+    with _session() as s:
+        v = industry_diffusion(s, window)
+    return v
+
+
 @app.get("/api/v1/quality/status")
 def get_quality():
     with _session() as s:
