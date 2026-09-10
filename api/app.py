@@ -230,6 +230,23 @@ def get_diffusion(window: int = Query(20, ge=5, le=120)):
     return v
 
 
+@app.get("/api/v1/estimate/aggregate")
+def get_aggregate(refresh: bool = Query(False, description="重算（60基金回归约2分钟）")):
+    import json as _json
+    snap = ROOT / "data" / "p0_results" / "aggregate_snapshot.json"
+    if refresh or not snap.exists():
+        from models.aggregate import aggregate_exposure
+        with _session() as s:
+            out = aggregate_exposure(s, window=120)
+        out["as_of"] = dt.datetime.now().isoformat(timespec="seconds")
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text(_json.dumps(out, ensure_ascii=False, indent=1))
+        return out
+    out = _json.loads(snap.read_text())
+    out["cached"] = True
+    return out
+
+
 @app.get("/api/v1/quality/status")
 def get_quality():
     with _session() as s:

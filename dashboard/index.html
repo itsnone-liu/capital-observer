@@ -42,6 +42,7 @@
   <button data-p="overview" class="on">大盘总览</button>
   <button data-p="sectors">板块对比</button>
   <button data-p="flows">ETF申赎</button>
+  <button data-p="funds">公募估计</button>
   <button data-p="margin">两融</button>
   <button data-p="quality">数据质量</button>
 </nav>
@@ -61,6 +62,14 @@
   <div id="p-flows" class="page">
     <div class="panel"><h3>首批ETF季度净申赎（份额口径，最新4期）</h3><table id="t-flows"></table></div>
     <p class="note" id="flows-note">净申赎=期间申购-期间赎回（亿份）。季度披露粒度：期间时点未知，不能推出单日方向；与成交额/价格口径不可比。实物申赎不等于新现金买股。</p>
+  </div>
+  <div id="p-funds" class="page">
+    <div class="cards" id="fund-cards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>样本基金行业暴露聚合（L2基准 · 等权）</h3><div id="c-fundagg" class="chart"></div></div>
+      <div class="panel"><h3>估计元信息（诚实标注）</h3><div id="fund-meta" style="font-size:13px;color:var(--dim);line-height:1.8"></div></div>
+    </div>
+    <p class="note">估计=申万一级线性近似，非市场总体；样本无规模权重（免费源限制），输出为 identification_bound。R²&lg;0.2 的基金剔除并计数。</p>
   </div>
   <div id="p-margin" class="page">
     <div class="cards" id="mg-cards"></div>
@@ -87,6 +96,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   Object.values(charts).forEach(c=>c.resize());
 });
 
+const SWN = {};  // SW industry code -> name, filled by sectors fetch
 (async () => {
   // ---------- overview ----------
   try {
@@ -110,6 +120,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   // ---------- sectors ----------
   try {
     const sr = await j('/api/v1/sectors/ranking');
+    sr.data.forEach(x => SWN[x.industry] = x.name);
     document.getElementById('sector-note').textContent = `as_of ${sr.as_of} · ${sr.coverage} · ${sr.denominator}`;
     const c = chart('c-sector'); if(!c) return;
     const d = [...sr.data].reverse();
@@ -132,6 +143,31 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
         `<td class="${cls(q.net)}">${(q.net/1e8).toFixed(1)}</td>`).join('');
       return `<tr><td>${e.name}</td><td>${e.code}</td>${cells}</tr>`;
     }).join('');
+  } catch(e){}
+
+  // ---------- funds (P3 aggregate) ----------
+  try {
+    const ag = await j('/api/v1/estimate/aggregate');
+    if(ag.status==='ok'){
+      const d = ag.data;
+      document.getElementById('fund-cards').innerHTML = `
+        <div class="card"><div class="t">达标样本</div><div class="v">${d.n_funds_qualified}/${d.n_funds_attempted}</div><div class="sub">R²≥0.2 计入</div></div>
+        <div class="card"><div class="t">样本平均拟合 R²</div><div class="v">${d.mean_r2}</div><div class="sub">120日窗口日频</div></div>
+        <div class="card"><div class="t">样本平均股票仓位</div><div class="v">${(d.mean_equity_position*100).toFixed(1)}%</div><div class="sub">约束回归估计</div></div>
+        <div class="card"><div class="t">口径</div><div class="v" style="font-size:14px">${ag.range_type}</div><div class="sub">等权样本（非加权总体）</div></div>`;
+      const c = chart('c-fundagg');
+      const entries = Object.entries(d.aggregate_equal_weight).slice(0,12).reverse();
+      if(c) c.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis',valueFormatter:v=>(v*100).toFixed(2)+'%'},
+        grid:{left:80,right:50,top:10,bottom:24},
+        xAxis:{type:'value',axisLabel:{color:'#7b8494',formatter:v=>(v*100).toFixed(0)+'%'},splitLine:{lineStyle:{color:'#232a3a'}}},
+        yAxis:{type:'category',data:entries.map(e=>SWN[e[0]]||e[0]),axisLabel:{color:'#d7dde8'}},
+        series:[{type:'bar',data:entries.map(e=>e[1]),barWidth:12,itemStyle:{color:'#c9a86a'}}]});
+      document.getElementById('fund-meta').innerHTML =
+        `<b style="color:var(--txt)">假设</b>：${ag.assumptions.join('；')}<br>` +
+        `<b style="color:var(--txt)">失效条件</b>：${ag.invalidation}<br>` +
+        `<b style="color:var(--txt)">警告</b>：${ag.warnings.slice(0,3).join('；')}<br>` +
+        `<b style="color:var(--txt)">情景</b>：${ag.scenario_id} · 计算时间 ${ag.as_of||'—'}`;
+    }
   } catch(e){}
 
   // ---------- margin ----------
