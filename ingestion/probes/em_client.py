@@ -39,8 +39,7 @@ def _get(path: str, params: dict, tries: int = 6, accept=None) -> dict:
     accept(js) -> False treats a 200-but-empty/invalid payload as node failure
     and rotates (push2delay happily 200s with empty kline payloads).
     """
-    nodes = NODES[:]
-    random.shuffle(nodes)
+    nodes = list(dict.fromkeys(["push2delay.eastmoney.com"] + NODES))  # delay node first (most stable from this host)
     last_exc: Exception | None = None
     for i, host in enumerate(nodes[:tries]):
         _throttle()
@@ -48,7 +47,7 @@ def _get(path: str, params: dict, tries: int = 6, accept=None) -> dict:
         try:
             r = requests.get(url, params=params,
                              headers={"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"},
-                             timeout=15)
+                             timeout=12)
             if r.status_code == 200 and r.text.strip():
                 js = r.json()
                 if accept is None or accept(js):
@@ -80,14 +79,14 @@ def secid(code: str) -> str:
 
 
 def kline_daily(sec: str, start: str = "19900101", end: str = "20991231",
-                fqt: int = 1) -> pd.DataFrame:
+                fqt: int = 1, tries: int = 6) -> pd.DataFrame:
     """Daily bars fqt: 0 raw / 1 qfq / 2 hfq."""
     params = {
         "secid": secid(sec), "fields1": "f1,f2,f3,f4,f5,f6",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         "klt": "101", "fqt": str(fqt), "beg": start, "end": end,
     }
-    js = _get("/api/qt/stock/kline/get", params,
+    js = _get("/api/qt/stock/kline/get", params, tries=tries,
               accept=lambda j: bool((j.get("data") or {}).get("klines")))
     data = (js.get("data") or {})
     rows = [ln.split(",") for ln in (data.get("klines") or [])]

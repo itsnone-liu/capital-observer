@@ -41,7 +41,7 @@ for sym, label in SINA_BASKET.items():
 
 # ---- 1b. EM direct kline: single fast canary (push2his RST from this host) --
 def _emk():
-    df = em_client.kline_daily("000300", start="20240101", end="20240110")
+    df = em_client.kline_daily("000300", start="20240101", end="20240110", tries=2)
     return df_artifact(df, "index_market", "em_kline_canary_000300",
                        "em_client:kline/000300 (upstream: eastmoney)", "eastmoney")
 P.check("em_kline_status_canary", "eastmoney", "em_client.kline_daily", _emk,
