@@ -255,13 +255,25 @@ def get_sector_panels(top: int = Query(36, ge=1, le=100)):
     cache_file = ROOT / "data" / "p0_results" / "timeseries_cache.json"
     ts = _json.loads(cache_file.read_text()) if cache_file.exists() else {}
     with _session() as s:
-        uni = board_universe(s)
-        # prefer boards with SW mapping + most days
-        mapped = [b for b in uni if b["sw"]]
-        pick = (mapped or uni)[:top]
-        panels = [sector_panel(s, b["board"],
-                               fund_expo_ts=ts.get("fund_exp"),
-                               etf_equiv_ts=ts.get("etf_state")) for b in pick]
+        from storage.models import Asset
+        groups = _json.loads((ROOT / "configs" / "major_groups.json").read_text())
+        assets = dict(s.execute(select(Asset.asset_key, Asset.name).where(Asset.asset_type == "em_board")).all())
+        panels = []
+        # Aggregate detailed EM boards into the user's major industry groups.
+        for gname, aliases in list(groups.items())[:top]:
+            keys = [k for k,nm in assets.items() if nm in aliases]
+            children = [sector_panel(s, k, fund_expo_ts=ts.get("fund_exp"), etf_equiv_ts=ts.get("etf_state")) for k in keys]
+            if not children: continue
+            base = children[0]
+            base["board"] = "GROUP:" + gname; base["name"] = gname
+            for line in ("main_cum", "fund_exp", "etf_state", "margin_bal"):
+                vals = {}
+                for ch in children:
+                    for d,v in ch["lines"][line]["points"]: vals[d] = vals.get(d,0)+v
+                base["lines"][line]["points"] = sorted((d,round(v,2)) for d,v in vals.items())
+            base["coverage"] = f"{len(children)}个细分板块合并"
+            base["cost_notes"] = [f"合并板块：{len(children)}个东财细分行业"] + base["cost_notes"]
+            panels.append(base)
     return {"data": panels, "as_of": max((p["as_of"] for p in panels if p["as_of"]), default=None),
             "coverage": f"{len(panels)}个板块面板（优先申万映射板块）",
             "denominator": "每线口径见 assumptions；主力=大单代理；公募/ETF=估计或假设线",
