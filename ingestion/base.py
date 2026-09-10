@@ -89,6 +89,9 @@ class CollectionAdapter(ABC):
     min_interval: float = 1.5
     _last: float = 0.0
 
+    #: True = fallback source: fill gaps only, never supersede primary values
+    fill_only: bool = False
+
     def throttle(self) -> None:
         wait = self._last + self.min_interval - time.monotonic()
         if wait > 0:
@@ -213,7 +216,8 @@ class JobRunner:
                         if good:
                             from storage.ingest import write_records
                             with Session(self.engine) as sw:
-                                wstats = write_records(sw, good)
+                                wstats = write_records(sw, good,
+                                                       fill_only=getattr(self._adapter, "fill_only", False))
                             agg = summary.setdefault("writes", {})
                             for k, v in wstats.items():
                                 agg[k] = agg.get(k, 0) + v  # accumulate per item

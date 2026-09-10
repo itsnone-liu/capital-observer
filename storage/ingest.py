@@ -47,7 +47,7 @@ def write_records(session: Session, records: list[dict]) -> dict:
         if kind == "fact":
             prev = _existing_fact(session, r)
             if prev is not None:
-                if abs((prev.value or 0.0) - float(r["value"])) < 1e-12:
+                if abs((prev.value or 0.0) - float(r["value"])) < 1e-12 or fill_only:
                     stats["skipped_unchanged"] += 1
                     continue
                 prev.quality_status = "stale"  # keep history, mark superseded

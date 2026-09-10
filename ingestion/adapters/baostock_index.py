@@ -24,6 +24,7 @@ class BaoStockIndexBarsAdapter(CollectionAdapter):
     upstream_id = "baostock.com"
     parser_version = "v1"
     min_interval = 1.0
+    fill_only = True  # fallback: fill gaps, never supersede sina primary
 
     def __init__(self, symbols: list[str] | None = None, start: str = "2023-08-01"):
         self.symbols = symbols or list(SYMS)
