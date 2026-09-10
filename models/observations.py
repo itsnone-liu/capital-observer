@@ -160,6 +160,7 @@ def etf_size_decomposition(session: Session, code: str) -> dict:
     share = share.sort_values("date")
     rows = []
     nav_idx = nav.set_index("date")["value"]
+    share = share[share["date"].str.len() == 10]  # drop any junk dates
     for i in range(1, len(share)):
         q0, q1 = share.iloc[i - 1], share.iloc[i]
         nav_at = [nav_idx.get(d) for d in (q0["date"], q1["date"])]
@@ -174,6 +175,7 @@ def etf_size_decomposition(session: Session, code: str) -> dict:
                      "nav_basis": "期末净值计价", "size_start_yuan": a0, "size_end_yuan": a1,
                      "flow_component_yuan": flow, "valuation_component_yuan": val,
                      "residual_yuan": (a1 - a0) - flow - val})
+    rows = rows[::-1]  # latest period first
     return {"data": rows, "as_of": str(share["date"].iloc[-1]),
             "coverage": f"季度份额{len(share)}期×日度净值", 
             "denominator": "份额=基金披露期末份额(万份×1e4)；规模=份额×单位净值(未含费用调整)",

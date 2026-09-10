@@ -66,6 +66,48 @@ def get_margin():
     return v
 
 
+ETF_FIRST_NAMES = {"510300": "沪深300ETF", "510050": "上证50ETF", "510500": "中证500ETF",
+                   "512100": "中证1000ETF", "159915": "创业板ETF", "588000": "科创50ETF",
+                   "563300": "中证2000ETF", "512480": "半导体ETF", "512760": "芯片ETF",
+                   "512690": "酒ETF", "515790": "光伏ETF", "512800": "银行ETF",
+                   "512010": "医药ETF", "159928": "消费ETF", "515030": "新能源车ETF"}
+
+
+@app.get("/api/v1/etf/flows")
+def get_etf_flows(periods: int = Query(4, ge=1, le=12)):
+    """Quarterly net subscribe/redeem across first-batch ETFs (quarter facts)."""
+    rows = engine.connect().execute(
+        select(FactObservation.subject_key, FactObservation.effective_at,
+               FactObservation.metric, FactObservation.value)
+        .where(FactObservation.metric.in_(
+            ("etf_share_subscribe", "etf_share_redeem", "etf_share_end", "etf_net_asset")),
+            FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc())).all()
+    by_etf: dict[str, dict] = {}
+    for subj, date, metric, value in rows:
+        code = subj.split(":")[-1]
+        e = by_etf.setdefault(code, {"name": ETF_FIRST_NAMES.get(code, code), "quarters": {}})
+        q = e["quarters"].setdefault(date, {})
+        q[metric] = float(value)
+    data = []
+    for code, e in by_etf.items():
+        qs = sorted(e["quarters"].items(), reverse=True)[:periods]
+        qlist = []
+        for d, q in qs:
+            sub, red = q.get("etf_share_subscribe"), q.get("etf_share_redeem")
+            qlist.append({"period": d, "subscribe": sub, "redeem": red,
+                          "net": (sub - red) if (sub is not None and red is not None) else None,
+                          "share_end": q.get("etf_share_end")})
+        data.append({"code": code, "name": e["name"], "quarters": qlist})
+    data.sort(key=lambda x: -(x["quarters"][0]["net"] or 0) if x["quarters"] and x["quarters"][0]["net"] is not None else 0)
+    latest_periods = sorted({q["period"] for e in data for q in e["quarters"]}, reverse=True)
+    return {"data": data, "as_of": latest_periods[0] if latest_periods else None,
+            "coverage": f"{len(data)}只首批ETF（季度披露）",
+            "denominator": "基金披露期间申购/赎回份额（亿份×1e8）；季度粒度，期间时点未知",
+            "warnings": ["净申赎=申购-赎回（份额口径）；与价格口径的成交额不可比",],
+            "published_cutoff": latest_periods[0] if latest_periods else None}
+
+
 @app.get("/api/v1/etf/{code}/structure")
 def get_etf_structure(code: str):
     if not (len(code) == 6 and code.isdigit()):

@@ -41,6 +41,7 @@
 <nav>
   <button data-p="overview" class="on">大盘总览</button>
   <button data-p="sectors">板块对比</button>
+  <button data-p="flows">ETF申赎</button>
   <button data-p="margin">两融</button>
   <button data-p="quality">数据质量</button>
 </nav>
@@ -56,6 +57,10 @@
   <div id="p-sectors" class="page">
     <div class="panel"><h3>申万一级行业：20日收益排名（31行业全量）</h3><div id="c-sector" class="chart" style="height:640px"></div></div>
     <p class="note" id="sector-note"></p>
+  </div>
+  <div id="p-flows" class="page">
+    <div class="panel"><h3>首批ETF季度净申赎（份额口径，最新4期）</h3><table id="t-flows"></table></div>
+    <p class="note" id="flows-note">净申赎=期间申购-期间赎回（亿份）。季度披露粒度：期间时点未知，不能推出单日方向；与成交额/价格口径不可比。实物申赎不等于新现金买股。</p>
   </div>
   <div id="p-margin" class="page">
     <div class="cards" id="mg-cards"></div>
@@ -113,6 +118,20 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
       xAxis:{type:'value',axisLabel:{color:'#7b8494',formatter:v=>(v*100).toFixed(0)+'%'},splitLine:{lineStyle:{color:'#232a3a'}}},
       yAxis:{type:'category',data:d.map(x=>x.name||x.industry),axisLabel:{color:'#d7dde8'}},
       series:[{type:'bar',data:d.map(x=>{const r=x.ret_20d;return {value:r,itemStyle:{color:r>=0?'#e05664':'#3fb28f'}};}),barWidth:10}]});
+  } catch(e){}
+
+  // ---------- etf flows ----------
+  try {
+    const f = await j('/api/v1/etf/flows?periods=4');
+    document.getElementById('flows-note').textContent =
+      `as_of ${f.as_of} · ${f.coverage} · ${f.denominator}`;
+    const t = document.getElementById('t-flows');
+    const hdr = ['ETF','代码', ...f.data[0].quarters.map(q=>q.period.slice(0,7))];
+    t.innerHTML = '<tr>'+hdr.map(h=>`<th>${h}</th>`).join('')+'</tr>' + f.data.map(e=>{
+      const cells = e.quarters.map(q=> q.net==null ? '<td>—</td>' :
+        `<td class="${cls(q.net)}">${(q.net/1e8).toFixed(1)}</td>`).join('');
+      return `<tr><td>${e.name}</td><td>${e.code}</td>${cells}</tr>`;
+    }).join('');
   } catch(e){}
 
   // ---------- margin ----------
