@@ -229,7 +229,7 @@ def etf_state_equivalent(session: Session) -> dict:
     idx_ind_w: dict[str, dict[str, float]] = {}
     for subj, member, w in wrows:
         idx = subj
-        stock = member.split(":", 1)[-1]
+        stock = member if str(member).startswith("stock:") else f"stock:{member}"
         nm = name_of_stock.get(stock, "")
         sw = EM_SW.get(nm.replace("行业", "").replace("Ⅱ", ""), "")
         if sw and w:
