@@ -69,34 +69,73 @@ def main(skip_history=False):
         log(f"history direct: {st.get('status')} ok={ok} failed={st.get('failed')}")
         if ok == 0:
             log("direct blocked; retrying through r.jina.ai proxy")
-            sys.path.insert(0, "/tmp")
-            try:
-                from jina_hist_backfill import fetch_via_jina  # type: ignore
-                EMSectorFlowHistoryAdapter.fetch = fetch_via_jina
-            except Exception:
-                # inline fallback: minimal proxy fetch
-                import requests as _rq
-                def fetch_via_jina(self, item):
-                    q = (f"secid=90.{item}&lmt={self.lmt}&klt=101&fields1=f1,f2,f3,f7"
-                         "&fields2=f51,f52,f53,f54,f55,f56,f61,f62")
-                    r = _rq.get("https://r.jina.ai/https://push2his.eastmoney.com"
-                                "/api/qt/stock/fflow/daykline/get?" + q,
-                                headers={"User-Agent": "Mozilla/5.0"}, timeout=40)
-                    import re as _re
-                    m = _re.search(r'"klines"\s*:\s*\[(.*?)\]', r.text, _re.S)
-                    if not m:
-                        raise ValueError("no klines in proxy response")
-                    lines = [x.strip().strip('"') for x in m.group(1).split('","')]
-                    lines = [x for x in lines if _re.match(r"^\d{4}-\d{2}-\d{2}", x)]
-                    if not lines:
-                        raise ValueError("empty klines")
-                    return {"payload": "\n".join(lines), "url": f"jina:fflow/{item}",
-                            "content_type": "text/csv"}
-                EMSectorFlowHistoryAdapter.fetch = fetch_via_jina
+            # self-contained proxy fetch with hard budget: requests' timeout
+            # does NOT cover DNS resolution (getaddrinfo can hang forever),
+            # and fetch-retries x JobRunner-retries multiply into tens of
+            # minutes. Budget = per-attempt checks + thread-level hard stop.
+            import threading
+            import requests as _rq
+            import re as _re
+            PROXY_BUDGET = 720  # seconds, hard wall for the whole proxy phase
+            _deadline = time.monotonic() + PROXY_BUDGET
+
+            def fetch_via_jina(self, item):
+                q = (f"secid=90.{item}&lmt={self.lmt}&klt=101&fields1=f1,f2,f3,f7"
+                     "&fields2=f51,f52,f53,f54,f55,f56,f61,f62")
+                last = None
+                for attempt in range(4):
+                    if time.monotonic() > _deadline:
+                        raise RuntimeError(f"proxy budget exhausted ({PROXY_BUDGET}s)")
+                    try:
+                        r = _rq.get("https://r.jina.ai/https://push2his.eastmoney.com"
+                                    "/api/qt/stock/fflow/daykline/get?" + q,
+                                    headers={"User-Agent": "Mozilla/5.0"},
+                                    timeout=(10, 40))  # (connect, read)
+                        m = _re.search(r'"klines"\s*:\s*\[(.*?)\]', r.text, _re.S)
+                        if not m:
+                            raise ValueError(f"no klines ({len(r.text)} chars)")
+                        lines = [x.strip().strip('"') for x in m.group(1).split('","')]
+                        lines = [x for x in lines if _re.match(r"^\d{4}-\d{2}-\d{2}", x)]
+                        if not lines:
+                            raise ValueError("empty klines")
+                        return {"payload": "\n".join(lines), "url": f"jina:fflow/{item}",
+                                "content_type": "text/csv"}
+                    except Exception as e:
+                        last = e
+                        log(f"  proxy {item} attempt{attempt + 1}: "
+                            f"{type(e).__name__} {str(e)[:60]}")
+                        if time.monotonic() > _deadline:
+                            break
+                        time.sleep(8 + attempt * 4)
+                raise RuntimeError(f"proxy budget reached, last error: {last}")
+
+            EMSectorFlowHistoryAdapter.fetch = fetch_via_jina
             ad = EMSectorFlowHistoryAdapter(boards, 250)
-            ad.min_interval = 20.0
-            st = runner.run(ad, job_key=f"em_flow_hist:jina:{today}")
-            log(f"history proxy: {st.get('status')} ok={st.get('ok')} failed={st.get('failed')}")
+            ad.min_interval = 10.0
+            result = {}
+
+            def _proxy_job():
+                try:
+                    result["st"] = runner.run(ad, job_key=f"em_flow_hist:jina:{today}")
+                except Exception as e:  # noqa: BLE001
+                    result["err"] = e
+
+            th = threading.Thread(target=_proxy_job, daemon=True)
+            th.start()
+            th.join(PROXY_BUDGET + 60)
+            if th.is_alive():
+                log(f"history proxy: HARD TIMEOUT after {PROXY_BUDGET + 60}s — abandoned; "
+                    "job lock self-heals after 2h (same-day rerun will report 'skipped')")
+            elif "err" in result:
+                log(f"history proxy: error: {result['err']}")
+            else:
+                st = result["st"]
+                if st.get("skipped"):
+                    log(f"history proxy: SKIPPED ({st.get('skipped')}) — "
+                        "stale lock, self-heals in 2h or clear job_runs manually")
+                else:
+                    log(f"history proxy: {st.get('status')} ok={st.get('ok')} "
+                        f"failed={st.get('failed')}")
 
     # 3. latest margin day
     st = runner.run(MarginDetailDayAdapter(dates=[today.replace("-", "")]),
