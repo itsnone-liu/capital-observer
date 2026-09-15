@@ -509,10 +509,19 @@ def get_etf_shares(code: str = Query(..., min_length=6, max_length=6),
 @app.get("/api/v1/context")
 def get_context(code: str | None = Query(None, description="股票代码（展示用）"),
                 board: str = Query(None, description="EM板块BK代码，如BK0420")):
-    """决策系统上下文契约（v2 decide 的 sector_capital_context 输入）。
+    """决策系统上下文契约 v0.2（market/sector 两层）。
 
-    通道分级：em_board_flow=proxy；market_margin=fact；broad_etf_shares=fact(T-1)。
-    context 规则化生成：无板块/缺数据 → unknown（绝不默认neutral）。
+    市场层（fact）：
+      - market:broad_etf_creation：宽基ETF净创设/赎回价值 net_creation_value
+        = Σ(Δshares × NAV)，同源差分；NAV 缺失回退链 etf_nav(≤date) → etf_close；
+        它代表新增 ETF 暴露规模（实物申赎），不等价于二级市场现金买股金额；
+      - market:margin_sse / market:margin_szse：沪深两融分通道（不强相加，判同向）。
+    行业层：
+      - sector:em_board_flow=proxy（唯一实装；board_margin/industry_etf 为规划位，
+        计入 coverage 分母以诚实呈现缺口）。
+    context 规则：板块方向 × 市场净偏向（一致流入=supportive，任何方向相左=divergent，
+    其余=neutral）；无板块/缺数据 → unknown（绝不默认 neutral）。
+    coverage 分母 = 预期通道总数（缺失也计入）。
     """
 
     def _iso(d: str | None) -> str | None:
@@ -521,99 +530,166 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
         d = str(d).replace("-", "")
         return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else str(d)
 
+    conn = engine.connect()
     channels: dict[str, dict] = {}
     limitations: list[str] = []
-    board_flow_dir = None
-    margin_dir = None
-    etf_dir = None
 
+    # ---- 市场层 1：宽基 ETF 净创设价值 Σ(Δshares×NAV) ----
+    broad = ("510300", "510500", "159915", "588000")
+    srows = conn.execute(
+        select(FactObservation.asset_key, FactObservation.source_id,
+               FactObservation.effective_at, FactObservation.value)
+        .where(FactObservation.asset_key.in_(broad),
+               FactObservation.metric == "etf_total_shares",
+               FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc())).all()
+    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    for akey, src, d, v in srows:
+        per.setdefault((akey, src), []).append((str(d), float(v)))
+
+    def _nav_at(akey: str, date_key: str) -> tuple[float, str] | None:
+        """NAV 回退链：etf_nav(≤date 最新) → etf_close(≤date 最新) → None。"""
+        for metric, tag in (("etf_nav", "nav"), ("etf_close", "close_proxy")):
+            r = conn.execute(
+                select(FactObservation.effective_at, FactObservation.value)
+                .where(FactObservation.asset_key == akey,
+                       FactObservation.metric == metric,
+                       FactObservation.quality_status == "valid",
+                       FactObservation.effective_at <= date_key)
+                .order_by(FactObservation.effective_at.desc()).limit(1)).first()
+            if r and float(r[1] or 0) > 0:
+                return float(r[1]), tag
+        return None
+
+    per_etf: list[dict] = []
+    net_creation_value = 0.0
+    latest_dates: list[str] = []
+    for (akey, src), items in sorted(per.items()):
+        items.sort()
+        if len(items) < 2:
+            continue
+        d_new, v_new = items[-1]
+        d_old, v_old = items[-2]
+        delta_shares = v_new - v_old
+        navr = _nav_at(akey, d_new)
+        if navr is None:
+            limitations.append(f"{akey}:no_nav_or_close_fallback")
+            continue
+        nav_used, nav_src = navr
+        value = delta_shares * nav_used
+        net_creation_value += value
+        latest_dates.append(d_new)
+        per_etf.append({"code": akey, "source": src, "date": _iso(d_new),
+                        "delta_shares": round(delta_shares, 0),
+                        "nav_used": round(nav_used, 4), "nav_source": nav_src,
+                        "net_creation_value_yuan": round(value, 0)})
+    etf_dir = None
+    if per_etf:
+        etf_dir = "inflow" if net_creation_value > 0 else ("outflow" if net_creation_value < 0 else "flat")
+        channels["market:broad_etf_creation"] = {
+            "evidence_type": "fact", "observation_date": _iso(max(latest_dates)),
+            "available_at": _iso(max(latest_dates)), "status": "fresh",
+            "direction": etf_dir, "net_creation_value_yuan": round(net_creation_value, 0),
+            "per_etf": per_etf,
+            "note": "净创设/赎回价值=Σ(Δ份额×NAV)，T-1官方份额事实，同源差分；"
+                    "实物申赎口径，不等于二级现金买股金额",
+        }
+    else:
+        limitations.append("broad_etf_creation_no_data")
+
+    # ---- 市场层 2：沪深两融分通道（fact，判断同向不强加） ----
+    margin_dirs: dict[str, str] = {}
+    for mkt, ch_name in (("market:SSE", "market:margin_sse"), ("market:SZSE", "market:margin_szse")):
+        mrows = conn.execute(
+            select(FactObservation.effective_at, FactObservation.value)
+            .where(FactObservation.subject_key == mkt,
+                   FactObservation.metric == "margin_fin_balance",
+                   FactObservation.quality_status == "valid")
+            .order_by(FactObservation.effective_at.desc()).limit(10)).all()
+        if len(mrows) >= 6:
+            delta5 = float(mrows[0][1]) - float(mrows[5][1])
+            mdir = "inflow" if delta5 > 0 else "outflow"
+            margin_dirs[mkt] = mdir
+            channels[ch_name] = {
+                "evidence_type": "fact", "observation_date": _iso(str(mrows[0][0])),
+                "available_at": _iso(str(mrows[0][0])), "status": "fresh",
+                "direction": mdir, "delta5_yuan": delta5,
+            }
+        else:
+            limitations.append(f"{ch_name}:insufficient")
+    margin_alignment = None
+    if len(margin_dirs) == 2:
+        margin_alignment = ("same_direction" if margin_dirs["market:SSE"] == margin_dirs["market:SZSE"]
+                            else "opposite")
+
+    # 市场净偏向：etf + sse + szse 三通道符号合计
+    bias_score = sum(1 if d == "inflow" else (-1 if d == "outflow" else 0)
+                     for d in [etf_dir, *margin_dirs.values()] if d is not None)
+    market_bias = ("inflow" if bias_score > 0 else "outflow" if bias_score < 0 else None) \
+        if (etf_dir is not None or margin_dirs) else None
+
+    # ---- 行业层 ----
+    board_flow_dir = None
     if board:
-        rows = engine.connect().execute(
+        rows = conn.execute(
             select(FactObservation.effective_at, FactObservation.value)
             .where(FactObservation.subject_key == f"bk:{board}",
                    FactObservation.metric == "sf_main_net",
                    FactObservation.quality_status == "valid")
             .order_by(FactObservation.effective_at.desc()).limit(10)).all()
         if rows:
-            latest5 = [v for _, v in rows[:5]]
-            cum5 = sum(latest5)
+            cum5 = sum(v for _, v in rows[:5])
             board_flow_dir = "inflow" if cum5 > 0 else ("outflow" if cum5 < 0 else "flat")
-            channels["em_board_flow"] = {
-                "evidence_type": "proxy", "observation_date": _iso(rows[0][0]),
-                "available_at": _iso(rows[0][0]), "status": "fresh",
+            channels["sector:em_board_flow"] = {
+                "evidence_type": "proxy", "observation_date": _iso(str(rows[0][0])),
+                "available_at": _iso(str(rows[0][0])), "status": "fresh",
                 "direction": board_flow_dir, "cum5_net": round(cum5, 0),
             }
         else:
-            limitations.append("em_board_flow_no_data_for_board")
+            limitations.append("sector:em_board_flow:no_data_for_board")
     else:
         limitations.append("stock_board_mapping_not_configured: pass board=BKxxxx")
 
-    mrows = engine.connect().execute(
-        select(FactObservation.effective_at, FactObservation.value)
-        .where(FactObservation.subject_key == "market:SSE",
-               FactObservation.metric == "margin_fin_balance",
-               FactObservation.quality_status == "valid")
-        .order_by(FactObservation.effective_at.desc()).limit(10)).all()
-    if len(mrows) >= 6:
-        delta5 = float(mrows[0][1]) - float(mrows[5][1])
-        margin_dir = "inflow" if delta5 > 0 else "outflow"
-        channels["market_margin"] = {
-            "evidence_type": "fact", "observation_date": _iso(mrows[0][0]),
-            "available_at": _iso(mrows[0][0]), "status": "fresh",
-            "direction": margin_dir, "delta5_yuan": delta5,
-        }
-    else:
-        limitations.append("market_margin_insufficient")
-
-    broad_codes = ("510300", "510500", "159915", "588000")
-    srows = engine.connect().execute(
-        select(FactObservation.asset_key, FactObservation.source_id,
-               FactObservation.effective_at, FactObservation.value)
-        .where(FactObservation.asset_key.in_(broad_codes),
-               FactObservation.metric == "etf_total_shares",
-               FactObservation.quality_status == "valid")
-        .order_by(FactObservation.effective_at.desc())).all()
-    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
-    for akey, src, d, v in srows:
-        per.setdefault((akey, src), []).append((d, float(v)))
-    deltas: list[float] = []
-    latest_dates: list[str] = []
-    for (akey, src), items in per.items():
-        items.sort()
-        if len(items) >= 2:
-            deltas.append(items[-1][1] - items[-2][1])
-            latest_dates.append(items[-1][0])
-    if deltas:
-        total_delta = sum(deltas)
-        etf_dir = "inflow" if total_delta > 0 else "outflow"
-        channels["broad_etf_shares"] = {
-            "evidence_type": "fact", "observation_date": _iso(max(latest_dates)),
-            "available_at": _iso(max(latest_dates)), "status": "fresh",
-            "direction": etf_dir, "delta_shares": round(total_delta, 0),
-            "note": "T-1官方份额事实（宽基ETF合计Δ，同源差分）",
-        }
-    else:
-        limitations.append("broad_etf_shares_no_data")
-
+    # ---- context 规则（板块方向 × 市场净偏向） ----
     if board_flow_dir is None:
         context = "unknown"
-    elif board_flow_dir == "inflow" and (margin_dir == "inflow" or etf_dir == "inflow"):
-        context = "supportive"
-    elif board_flow_dir == "outflow" and (margin_dir == "inflow" or etf_dir == "inflow"):
-        context = "divergent"
-    else:
+    elif board_flow_dir == "flat":
         context = "neutral"
+    elif market_bias is None:
+        context = "neutral"
+        limitations.append("market_bias_unavailable")
+    elif (board_flow_dir == "inflow") == (market_bias == "inflow"):
+        context = "supportive" if board_flow_dir == "inflow" else "neutral"
+    else:
+        context = "divergent"
+
+    expected = ["market:broad_etf_creation", "market:margin_sse", "market:margin_szse",
+                "sector:em_board_flow", "sector:board_margin", "sector:industry_etf"]
     known = sum(1 for ch in channels.values() if ch["status"] != "unknown")
     return {
         "sector_id": board,
         "symbol": code,
         "as_of": max([ch["observation_date"] for ch in channels.values()], default=None),
         "context": context,
-        "coverage": f"{known}/{len(channels)}",
+        "coverage": f"{known}/{len(expected)}",
         "channels": channels,
-        "method_version": "context-v0.1-rule",
+        "market_capital_context": {
+            "bias": market_bias, "bias_score": bias_score,
+            "broad_etf_net_creation_value_yuan": round(net_creation_value, 0),
+            "margin_alignment": margin_alignment,
+            "note": "市场层=资金整体环境（宽基ETF创设/赎回 + 沪深两融分立）",
+        },
+        "sector_capital_context": {
+            "sector_id": board, "board_flow_direction": board_flow_dir,
+            "expected_channels": ["sector:em_board_flow", "sector:board_margin",
+                                  "sector:industry_etf"],
+            "implemented": ["sector:em_board_flow"],
+            "note": "行业层当前仅大单proxy；board_margin/industry_etf 为规划位",
+        },
+        "method_version": "context-v0.2-layered",
         "limitations": limitations,
         "notes": ["context为规则化输出：proxy与fact分级标注，缺数据=unknown非neutral",
+                  "net_creation_value口径：实物申赎（新增ETF暴露规模），非二级现金买股",
                   "盘中可得性：em_flow当日盘后；margin/etf_shares为T/T-1事实"],
     }
 
