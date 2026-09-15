@@ -4,15 +4,17 @@
 Triggered by the capital-observer skill when the user asks e.g.
 "查看主力情况". Steps (all idempotent, safe to re-run):
 
- 1. EM sector flow snapshot (all boards, today)
- 2. EM sector flow history for major-group boards (direct; falls back to
-    the r.jina.ai read-proxy when push2his throttles this IP)
- 3. Stock-level margin detail for the latest trading day
- 4. TDX 880 board-index dailies from local vipdoc
- 5. Recompute fund-exposure + ETF-equivalent timeseries cache
- 6. Restart uvicorn on :8120 and verify the panels endpoint
+  1. EM sector flow snapshot (all boards, today)
+  2. EM sector flow history for major-group boards (direct; falls back to
+     the r.jina.ai read-proxy when push2his throttles this IP)
+  3. Stock-level margin detail for the latest trading day
+  3.5 ETF official daily shares (SSE per-day + SZSE range; incremental,
+      free exchange-direct; skip with --skip-etf)
+  4. TDX 880 board-index dailies from local vipdoc
+  5. Recompute fund-exposure + ETF-equivalent timeseries cache
+  6. Restart uvicorn on :8120 and verify the panels endpoint
 
-Usage: python3 scripts/refresh.py [--skip-history]
+Usage: python3 scripts/refresh.py [--skip-history] [--skip-etf] [--etf-backfill N]
 """
 import datetime as dt
 import json
@@ -141,6 +143,35 @@ def main(skip_history=False):
     st = runner.run(MarginDetailDayAdapter(dates=[today.replace("-", "")]),
                     job_key=f"margin_detail:{today}")
     log(f"margin: {st.get('status')} ok={st.get('ok')}")
+
+    # 3.5 ETF official daily shares — incremental, free exchange-direct
+    #     (sse per-day snapshot; szse range xlsx; same-source diff only)
+    if "--skip-etf" in sys.argv:
+        log("etf shares: SKIPPED (--skip-etf)")
+    else:
+        from ingestion.adapters.etf_share import (SSEETFShareAdapter,
+                                                  SZSEETFShareAdapter,
+                                                  latest_share_dates,
+                                                  trading_days_since)
+        last = latest_share_dates(engine)
+        backfill = 10
+        for arg in sys.argv:
+            if arg.startswith("--etf-backfill="):
+                backfill = max(1, int(arg.split("=", 1)[1]))
+        have = [d for d in (last.get("sse.etf_share"), last.get("szse.etf_share")) if d]
+        anchor = min(have) if have else \
+            (dt.date.today() - dt.timedelta(days=backfill)).isoformat()
+        next_day = (dt.date.fromisoformat(anchor) + dt.timedelta(days=1)).isoformat()
+        want = trading_days_since(next_day, today)
+        if want:
+            st = runner.run(SSEETFShareAdapter(dates=want),
+                            job_key=f"etf_share_sse:{want[-1]}:{len(want)}")
+            log(f"etf sse: {st.get('status')} ok={st.get('ok')} days={len(want)}")
+            st = runner.run(SZSEETFShareAdapter(anchor, today),
+                            job_key=f"etf_share_szse:{today.replace('-', '')}")
+            log(f"etf szse: {st.get('status')} ok={st.get('ok')}")
+        else:
+            log("etf shares: already current")
 
     # 4. TDX dailies
     rc = sh(f"{sys.executable} {ROOT}/ingestion/ingest_tdx880.py")

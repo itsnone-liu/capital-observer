@@ -450,6 +450,174 @@ def get_quality():
     }
 
 
+@app.get("/api/v1/etf/shares")
+def get_etf_shares(code: str = Query(..., min_length=6, max_length=6),
+                   days: int = Query(30, ge=1, le=500)):
+    """ETF 日度官方总份额（沪深交易所直连事实，T+1可得）。
+
+    share_change 严格同源差分；estimated_net_flow = Δ份额 × 当日净值
+    （净值缺失则为 null，不外推）。两所口径与时点不同，不跨源合并。
+    """
+    rows = engine.connect().execute(
+        select(FactObservation.source_id, FactObservation.effective_at,
+               FactObservation.value)
+        .where(FactObservation.asset_key == code,
+               FactObservation.metric == "etf_total_shares",
+               FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc())).all()
+    if not rows:
+        raise HTTPException(404, f"no etf_total_shares facts for {code}")
+    nav_rows = engine.connect().execute(
+        select(FactObservation.effective_at, FactObservation.value)
+        .where(FactObservation.asset_key == code,
+               FactObservation.metric == "etf_nav",
+               FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc())).all()
+    nav_map = {d: float(v) for d, v in nav_rows}
+    by_source: dict[str, list[tuple[str, float]]] = {}
+    for src, d, v in rows:
+        by_source.setdefault(src, []).append((d, float(v)))
+    series = []
+    for src, items in sorted(by_source.items()):
+        items.sort()  # 升序便于差分
+        prev: float | None = None
+        src_series = []
+        for d, v in items:
+            change = (v - prev) if prev is not None else None
+            nav = nav_map.get(d)
+            est = (change * nav) if (change is not None and nav) else None
+            src_series.append({"date": d, "source": src, "total_share": v,
+                               "share_change": change,
+                               "nav": nav,
+                               "estimated_net_flow": est})
+            prev = v
+        series.extend(src_series[-days:])  # 全序列差分后再截断窗口
+    series.sort(key=lambda r: r["date"], reverse=True)
+    latest = max(d for _, d, _ in rows)
+    return {
+        "code": code,
+        "as_of": latest,
+        "unit": {"total_share": "shares", "share_change": "shares",
+                 "estimated_net_flow": "CNY"},
+        "series": series,
+        "evidence": "交易所官方日度份额（T日晚清算后发布；share_change同源差分；"
+                    "estimated_net_flow=Δ×当日净值，净值缺失不外推）",
+        "warnings": ["沪深两所发布时点不同，不跨源差分", "当日数据T+1早可得，盘中无此事实"],
+    }
+
+
+@app.get("/api/v1/context")
+def get_context(code: str | None = Query(None, description="股票代码（展示用）"),
+                board: str = Query(None, description="EM板块BK代码，如BK0420")):
+    """决策系统上下文契约（v2 decide 的 sector_capital_context 输入）。
+
+    通道分级：em_board_flow=proxy；market_margin=fact；broad_etf_shares=fact(T-1)。
+    context 规则化生成：无板块/缺数据 → unknown（绝不默认neutral）。
+    """
+
+    def _iso(d: str | None) -> str | None:
+        if not d:
+            return d
+        d = str(d).replace("-", "")
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else str(d)
+
+    channels: dict[str, dict] = {}
+    limitations: list[str] = []
+    board_flow_dir = None
+    margin_dir = None
+    etf_dir = None
+
+    if board:
+        rows = engine.connect().execute(
+            select(FactObservation.effective_at, FactObservation.value)
+            .where(FactObservation.subject_key == f"bk:{board}",
+                   FactObservation.metric == "sf_main_net",
+                   FactObservation.quality_status == "valid")
+            .order_by(FactObservation.effective_at.desc()).limit(10)).all()
+        if rows:
+            latest5 = [v for _, v in rows[:5]]
+            cum5 = sum(latest5)
+            board_flow_dir = "inflow" if cum5 > 0 else ("outflow" if cum5 < 0 else "flat")
+            channels["em_board_flow"] = {
+                "evidence_type": "proxy", "observation_date": _iso(rows[0][0]),
+                "available_at": _iso(rows[0][0]), "status": "fresh",
+                "direction": board_flow_dir, "cum5_net": round(cum5, 0),
+            }
+        else:
+            limitations.append("em_board_flow_no_data_for_board")
+    else:
+        limitations.append("stock_board_mapping_not_configured: pass board=BKxxxx")
+
+    mrows = engine.connect().execute(
+        select(FactObservation.effective_at, FactObservation.value)
+        .where(FactObservation.subject_key == "market:SSE",
+               FactObservation.metric == "margin_fin_balance",
+               FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc()).limit(10)).all()
+    if len(mrows) >= 6:
+        delta5 = float(mrows[0][1]) - float(mrows[5][1])
+        margin_dir = "inflow" if delta5 > 0 else "outflow"
+        channels["market_margin"] = {
+            "evidence_type": "fact", "observation_date": _iso(mrows[0][0]),
+            "available_at": _iso(mrows[0][0]), "status": "fresh",
+            "direction": margin_dir, "delta5_yuan": delta5,
+        }
+    else:
+        limitations.append("market_margin_insufficient")
+
+    broad_codes = ("510300", "510500", "159915", "588000")
+    srows = engine.connect().execute(
+        select(FactObservation.asset_key, FactObservation.source_id,
+               FactObservation.effective_at, FactObservation.value)
+        .where(FactObservation.asset_key.in_(broad_codes),
+               FactObservation.metric == "etf_total_shares",
+               FactObservation.quality_status == "valid")
+        .order_by(FactObservation.effective_at.desc())).all()
+    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    for akey, src, d, v in srows:
+        per.setdefault((akey, src), []).append((d, float(v)))
+    deltas: list[float] = []
+    latest_dates: list[str] = []
+    for (akey, src), items in per.items():
+        items.sort()
+        if len(items) >= 2:
+            deltas.append(items[-1][1] - items[-2][1])
+            latest_dates.append(items[-1][0])
+    if deltas:
+        total_delta = sum(deltas)
+        etf_dir = "inflow" if total_delta > 0 else "outflow"
+        channels["broad_etf_shares"] = {
+            "evidence_type": "fact", "observation_date": _iso(max(latest_dates)),
+            "available_at": _iso(max(latest_dates)), "status": "fresh",
+            "direction": etf_dir, "delta_shares": round(total_delta, 0),
+            "note": "T-1官方份额事实（宽基ETF合计Δ，同源差分）",
+        }
+    else:
+        limitations.append("broad_etf_shares_no_data")
+
+    if board_flow_dir is None:
+        context = "unknown"
+    elif board_flow_dir == "inflow" and (margin_dir == "inflow" or etf_dir == "inflow"):
+        context = "supportive"
+    elif board_flow_dir == "outflow" and (margin_dir == "inflow" or etf_dir == "inflow"):
+        context = "divergent"
+    else:
+        context = "neutral"
+    known = sum(1 for ch in channels.values() if ch["status"] != "unknown")
+    return {
+        "sector_id": board,
+        "symbol": code,
+        "as_of": max([ch["observation_date"] for ch in channels.values()], default=None),
+        "context": context,
+        "coverage": f"{known}/{len(channels)}",
+        "channels": channels,
+        "method_version": "context-v0.1-rule",
+        "limitations": limitations,
+        "notes": ["context为规则化输出：proxy与fact分级标注，缺数据=unknown非neutral",
+                  "盘中可得性：em_flow当日盘后；margin/etf_shares为T/T-1事实"],
+    }
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
