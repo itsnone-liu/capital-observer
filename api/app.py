@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from models.observations import (etf_size_decomposition, margin_view,  # noqa: E402
                                  market_overview, sector_ranking)
-from storage.models import FactObservation, JobRun  # noqa: E402
+from storage.models import Asset, AssetMembership, FactObservation, JobRun  # noqa: E402
 
 DB_URL = f"sqlite:///{ROOT / 'data' / 'capobs.db'}"
 engine = create_engine(DB_URL, future=True, connect_args={"check_same_thread": False})
@@ -750,6 +750,41 @@ def get_observations(metric: str, start: str, end: str,
             } for r in rows],
             "limitations": ["unknown available_at excluded",
                             "hindsight/revised-complete view not mixed into this endpoint"]}
+
+
+@app.get("/api/v1/membership")
+def get_membership(version: str = Query("sw_l1_2021"),
+                   as_of: str = Query(..., description="YYYY-MM-DD")):
+    """as_of当日有效的成分映射：{code: {industry_code, industry_name, effective_from}}。
+
+    早于计入日期返回 no_membership（换组前旧行业未知，不猜）；重跑导入时旧区间
+    会闭合并开新行。available_at 规则：分类自计入日生效（公告先行），取
+    effective_from+1 日的保守口径，已在 method_version 注明。
+    """
+    from sqlalchemy.orm import aliased
+    member = aliased(Asset)
+    group = aliased(Asset)
+    rows = (Session(engine).execute(
+        select(member.asset_key, AssetMembership.effective_from,
+               AssetMembership.effective_to, group.asset_key, group.name)
+        .join(member, member.id == AssetMembership.asset_id)
+        .join(group, group.id == AssetMembership.group_asset_id)
+        .where(AssetMembership.classification_version == version,
+               AssetMembership.effective_from <= as_of)
+    ).all())
+    mapping: dict[str, dict] = {}
+    for stock_key, eff_from, eff_to, group_key, group_name in rows:
+        if eff_to is not None and eff_to <= as_of:
+            continue
+        code = stock_key.split(":", 1)[1] if ":" in stock_key else stock_key
+        mapping[code] = {"industry_code": group_key.split(":", 1)[-1],
+                         "industry_name": group_name,
+                         "effective_from": eff_from}
+    return {"version": version, "as_of": as_of, "count": len(mapping),
+            "mapping": mapping,
+            "method_version": "membership-v1-effective-dated",
+            "notes": ["换组前旧行业未知→不返回该股票(unknown)",
+                      "切换边界: effective_to<=as_of视为已切换到新行业"]}
 
 
 class ContextItem(BaseModel):

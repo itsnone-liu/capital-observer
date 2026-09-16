@@ -135,8 +135,6 @@ def write_records(session: Session, records: list[dict], fill_only: bool = False
                 effective_from=asof))
             stats.setdefault("membership_inserted", 0)
             stats["membership_inserted"] += 1
-            stats.setdefault("membership_inserted", 0)
-            stats["membership_inserted"] += 1
         else:
             stats["unknown_kind"] += 1
     session.commit()
