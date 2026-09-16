@@ -64,6 +64,16 @@ class Batch:
     data_range: str = ""
 
 
+def normalize_date_str(value) -> str | None:
+    """统一日期为YYYY-MM-DD；混合YYYYMMDD会让字符串比较静默错滤。"""
+    if value is None:
+        return None
+    s = str(value).strip().replace("-", "")
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    return str(value)
+
+
 def error_class(exc: BaseException) -> str:
     msg = str(exc).lower()
     if "timeout" in msg or "timed out" in msg:
@@ -223,8 +233,12 @@ class JobRunner:
                                 # adapter explicitly proves it. Legacy adapters that copied
                                 # effective_at are downgraded to NULL; actual retrieval time is
                                 # the conservative first usable time for new ingestion.
+                                r["effective_at"] = normalize_date_str(r.get("effective_at"))
                                 if not r.pop("published_at_verified", False):
                                     r["published_at"] = None
+                                elif not r.get("published_at"):
+                                    # 首次实际观察到的发布时刻，可验证口径。
+                                    r["published_at"] = fetched_at
                                 r.setdefault("available_at", fetched_at)
                         if good:
                             from storage.ingest import write_records

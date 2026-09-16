@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from ingestion.base import CollectionAdapter, JobRunner
+from ingestion.base import CollectionAdapter, JobRunner, normalize_date_str
 from storage.ingest import write_records
 from storage.models import Asset, AssetMembership, Base, FactObservation
 
@@ -24,6 +24,29 @@ class FakeAdapter(CollectionAdapter):
                  "metric": "x", "value": 1, "unit": "count",
                  "effective_at": item, "published_at": item,
                  "quality_status": "valid"}]
+
+
+def test_normalize_date_str_unifies_compact_and_iso():
+    assert normalize_date_str("20260915") == "2026-09-15"
+    assert normalize_date_str("2026-09-15") == "2026-09-15"
+    assert normalize_date_str(None) is None
+    assert normalize_date_str("2026-09-15T21:00:00") == "2026-09-15T21:00:00"
+
+
+def test_verified_adapter_keeps_observed_publication_time(tmp_path: Path):
+    class VerifiedAdapter(FakeAdapter):
+        def parse(self, item, raw):
+            return [{"kind": "fact", "subject_key": "market:Y", "asset_key": None,
+                     "metric": "x", "value": 2, "unit": "count",
+                     "effective_at": "20260915", "published_at_verified": True,
+                     "quality_status": "valid"}]
+
+    url = f"sqlite:///{tmp_path/'v.db'}"
+    JobRunner(url, tmp_path / "raw").run(VerifiedAdapter(), job_key="p0v")
+    with Session(create_engine(url)) as s:
+        row = s.execute(select(FactObservation)).scalar_one()
+        assert row.effective_at == "2026-09-15"
+        assert row.published_at == row.available_at  # 实际观察到的发布时刻
 
 
 def test_unverified_published_at_is_cleared_and_available_at_set(tmp_path: Path):

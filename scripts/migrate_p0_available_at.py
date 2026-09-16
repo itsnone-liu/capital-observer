@@ -23,8 +23,16 @@ def main() -> None:
     # 清空而不是编造；position_disclosure不在本迁移范围内。
     n = conn.execute("select count(*) from fact_observation where published_at is not null").fetchone()[0]
     conn.execute("update fact_observation set published_at=null where published_at is not null")
+    # 日期格式统一：YYYYMMDD与YYYY-MM-DD混存会让字符串比较静默错滤。
+    m = conn.execute(
+        "select count(*) from fact_observation where length(effective_at)=8").fetchone()[0]
+    if m:
+        conn.execute("""update fact_observation set effective_at =
+            substr(effective_at,1,4)||'-'||substr(effective_at,5,2)||'-'||substr(effective_at,7,2)
+            where length(effective_at)=8""")
     conn.commit()
-    print(f"cleared {n} unverified published_at values; existing available_at kept NULL")
+    print(f"cleared {n} unverified published_at; normalized {m} effective_at dates; "
+          "existing available_at kept NULL")
     conn.close()
 
 

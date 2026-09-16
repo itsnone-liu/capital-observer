@@ -83,7 +83,10 @@ class SSEETFShareAdapter(CollectionAdapter):
                              subject_key=f"etf:{code}", asset_key=code,
                              metric=METRIC, value=float(shares), unit="shares",
                              currency="CNY", effective_at=date_iso,
-                             published_at=date_iso, quality_status="valid"))
+                             # 交易所官方日度文件，T+1清算后发布；发布时刻以
+                             # 实际首次抓到的时间计（JobRunner回填fetched_at）。
+                             published_at=None, published_at_verified=True,
+                             quality_status="valid"))
         return recs
 
 
@@ -156,7 +159,8 @@ class SZSEETFShareAdapter(CollectionAdapter):
                              subject_key=f"etf:{code}", asset_key=code,
                              metric=METRIC, value=float(shares), unit="shares",
                              currency="CNY", effective_at=f"{d[:4]}-{d[4:6]}-{d[6:]}",
-                             published_at=f"{d[:4]}-{d[4:6]}-{d[6:]}", quality_status="valid"))
+                             published_at=None, published_at_verified=True,
+                             quality_status="valid"))
         return recs
 
 
