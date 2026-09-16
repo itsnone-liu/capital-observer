@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from fastapi import FastAPI, HTTPException, Query  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 from sqlalchemy import create_engine, func, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -508,7 +509,8 @@ def get_etf_shares(code: str = Query(..., min_length=6, max_length=6),
 
 @app.get("/api/v1/context")
 def get_context(code: str | None = Query(None, description="股票代码（展示用）"),
-                board: str = Query(None, description="EM板块BK代码，如BK0420")):
+                board: str = Query(None, description="EM板块BK代码，如BK0420"),
+                as_of: str | None = Query(None, description="PIT截止时间ISO-8601")):
     """决策系统上下文契约 v0.2（market/sector 两层）。
 
     市场层（fact）：
@@ -530,6 +532,11 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
         d = str(d).replace("-", "")
         return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else str(d)
 
+    try:
+        cutoff = dt.datetime.fromisoformat(as_of) if as_of else dt.datetime.utcnow()
+    except ValueError as exc:
+        raise HTTPException(400, "as_of must be ISO-8601") from exc
+    cutoff_iso = cutoff.replace(microsecond=0).isoformat()
     conn = engine.connect()
     channels: dict[str, dict] = {}
     limitations: list[str] = []
@@ -542,7 +549,9 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
                FactObservation.available_at)
         .where(FactObservation.asset_key.in_(broad),
                FactObservation.metric == "etf_total_shares",
-               FactObservation.quality_status == "valid")
+               FactObservation.quality_status == "valid",
+               FactObservation.available_at.is_not(None),
+               FactObservation.available_at <= cutoff_iso)
         .order_by(FactObservation.effective_at.desc())).all()
     per: dict[tuple[str, str], list[tuple[str, float, str | None]]] = {}
     for akey, src, d, v, available in srows:
@@ -556,7 +565,9 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
                 .where(FactObservation.asset_key == akey,
                        FactObservation.metric == metric,
                        FactObservation.quality_status == "valid",
-                       FactObservation.effective_at <= date_key)
+                       FactObservation.effective_at <= date_key,
+                       FactObservation.available_at.is_not(None),
+                       FactObservation.available_at <= cutoff_iso)
                 .order_by(FactObservation.effective_at.desc()).limit(1)).first()
             if r and float(r[1] or 0) > 0:
                 return float(r[1]), tag
@@ -610,7 +621,9 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
                    FactObservation.available_at)
             .where(FactObservation.subject_key == mkt,
                    FactObservation.metric == "margin_fin_balance",
-                   FactObservation.quality_status == "valid")
+                   FactObservation.quality_status == "valid",
+                   FactObservation.available_at.is_not(None),
+                   FactObservation.available_at <= cutoff_iso)
             .order_by(FactObservation.effective_at.desc()).limit(10)).all()
         if len(mrows) >= 6 and mrows[0][2]:
             delta5 = float(mrows[0][1]) - float(mrows[5][1])
@@ -642,7 +655,9 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
                    FactObservation.available_at)
             .where(FactObservation.subject_key == f"bk:{board}",
                    FactObservation.metric == "sf_main_net",
-                   FactObservation.quality_status == "valid")
+                   FactObservation.quality_status == "valid",
+                   FactObservation.available_at.is_not(None),
+                   FactObservation.available_at <= cutoff_iso)
             .order_by(FactObservation.effective_at.desc()).limit(10)).all()
         if rows and rows[0][2]:
             cum5 = sum(v for _, v, _ in rows[:5])
@@ -663,7 +678,7 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     elif board_flow_dir == "flat":
         context = "neutral"
     elif market_bias is None:
-        context = "neutral"
+        context = "unknown"
         limitations.append("market_bias_unavailable")
     elif (board_flow_dir == "inflow") == (market_bias == "inflow"):
         context = "supportive" if board_flow_dir == "inflow" else "neutral"
@@ -676,7 +691,8 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     return {
         "sector_id": board,
         "symbol": code,
-        "as_of": max([ch["observation_date"] for ch in channels.values()], default=None),
+        "as_of": cutoff_iso,
+        "latest_observation_date": max([ch["observation_date"] for ch in channels.values()], default=None),
         "context": context,
         "coverage": f"{known}/{len(expected)}",
         "channels": channels,
@@ -693,12 +709,30 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
             "implemented": ["sector:em_board_flow"],
             "note": "行业层当前仅大单proxy；board_margin/industry_etf 为规划位",
         },
-        "method_version": "context-v0.2-layered",
+        "method_version": "context-v0.3-pit",
         "limitations": limitations,
         "notes": ["context为规则化输出：proxy与fact分级标注，缺数据=unknown非neutral",
                   "net_creation_value口径：实物申赎（新增ETF暴露规模），非二级现金买股",
                   "盘中可得性：em_flow当日盘后；margin/etf_shares为T/T-1事实"],
     }
+
+
+class ContextItem(BaseModel):
+    code: str | None = None
+    board: str | None = None
+
+
+class ContextBatchRequest(BaseModel):
+    as_of: str
+    items: list[ContextItem]
+
+
+@app.post("/api/v1/context/batch")
+def get_context_batch(req: ContextBatchRequest):
+    if len(req.items) > 500:
+        raise HTTPException(400, "maximum 500 context items")
+    return {"as_of": req.as_of, "method_version": "context-v0.3-pit",
+            "items": [get_context(x.code, x.board, req.as_of) for x in req.items]}
 
 
 @app.get("/health")
