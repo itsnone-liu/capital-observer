@@ -214,9 +214,18 @@ class JobRunner:
                         recs = adapter.parse(item, raw)
                         good, warns = adapter.validate(recs)
                         summary["warnings"] += warns[:5]
+                        fetched_at = dt.datetime.utcnow().replace(microsecond=0).isoformat()
                         for r in good:
                             r.setdefault("source_id", adapter.source_id)
                             r.setdefault("artifact_id", art_id_val)
+                            if r.get("kind", "fact") == "fact":
+                                # P0 publication integrity: published_at may only survive when
+                                # adapter explicitly proves it. Legacy adapters that copied
+                                # effective_at are downgraded to NULL; actual retrieval time is
+                                # the conservative first usable time for new ingestion.
+                                if not r.pop("published_at_verified", False):
+                                    r["published_at"] = None
+                                r.setdefault("available_at", fetched_at)
                         if good:
                             from storage.ingest import write_records
                             with Session(self.engine) as sw:

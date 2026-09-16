@@ -129,7 +129,8 @@ class FactObservation(Base):
     unit: Mapped[str] = mapped_column(String(32))
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     effective_at: Mapped[str] = mapped_column(String(32), index=True)    # date(+-precision) or datetime
-    published_at: Mapped[str | None] = mapped_column(String(32), index=True)  # NULL allowed & honest
+    published_at: Mapped[str | None] = mapped_column(String(32), index=True)  # upstream verified only
+    available_at: Mapped[str | None] = mapped_column(String(32), index=True)  # first safely usable time
     ingested_at: Mapped[dt.datetime] = mapped_column(DateTime(), default=_now)
     revision_id: Mapped[int | None] = mapped_column(ForeignKey("fact_observation.id"))
     supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("fact_observation.id"))
@@ -137,6 +138,7 @@ class FactObservation(Base):
     __table_args__ = (
         Index("ix_fact_lookup", "subject_key", "metric", "effective_at"),
         Index("ix_fact_pub", "published_at"),
+        Index("ix_fact_available", "available_at"),
         CheckConstraint("quality_status in ('valid','degraded','stale','unidentifiable','failed')",
                         name="ck_fact_quality"),
     )

@@ -49,6 +49,12 @@ def write_records(session: Session, records: list[dict], fill_only: bool = False
             prev = _existing_fact(session, r)
             if prev is not None:
                 if abs((prev.value or 0.0) - float(r["value"])) < 1e-12 or fill_only:
+                    # 事实值未变，但首次在本系统真实取得时补 available_at；
+                    # published_at 仍保持NULL，不能把抓取时间冒充披露时间。
+                    if prev.available_at is None and r.get("available_at"):
+                        prev.available_at = r["available_at"]
+                        stats.setdefault("availability_stamped", 0)
+                        stats["availability_stamped"] += 1
                     stats["skipped_unchanged"] += 1
                     continue
                 prev.quality_status = "stale"  # keep history, mark superseded
@@ -59,6 +65,7 @@ def write_records(session: Session, records: list[dict], fill_only: bool = False
                     metric=r["metric"], value=float(r["value"]), unit=r["unit"],
                     currency=r.get("currency", "CNY"),
                     effective_at=r["effective_at"], published_at=r.get("published_at"),
+                    available_at=r.get("available_at"),
                     quality_status=r.get("quality_status", "valid"),
                     supersedes_id=prev.id)
                 session.add(nu)
@@ -70,6 +77,7 @@ def write_records(session: Session, records: list[dict], fill_only: bool = False
                     metric=r["metric"], value=float(r["value"]), unit=r["unit"],
                     currency=r.get("currency", "CNY"),
                     effective_at=r["effective_at"], published_at=r.get("published_at"),
+                    available_at=r.get("available_at"),
                     quality_status=r.get("quality_status", "valid")))
                 stats["fact_inserted"] += 1
         elif kind == "disclosure":
@@ -105,19 +113,28 @@ def write_records(session: Session, records: list[dict], fill_only: bool = False
             _ensure_asset(session, r["asset_key"])
             ga = session.execute(select(Asset).where(Asset.asset_key == r["group_key"])).scalar_one()
             ma = session.execute(select(Asset).where(Asset.asset_key == r["asset_key"])).scalar_one()
-            existing = session.execute(
+            asof = r["effective_from"]
+            active = session.execute(
                 select(AssetMembership).where(
                     AssetMembership.asset_id == ma.id,
-                    AssetMembership.group_asset_id == ga.id,
-                    AssetMembership.classification_version == r["classification_version"])
-            ).scalar_one_or_none()
-            if existing is not None:
+                    AssetMembership.classification_version == r["classification_version"],
+                    AssetMembership.effective_to.is_(None))
+            ).scalars().all()
+            same = next((x for x in active if x.group_asset_id == ga.id), None)
+            if same is not None:
                 stats["skipped_unchanged"] += 1
                 continue
+            # 新快照显示换组：关闭同分类下旧开放区间，再开新版本。
+            for old in active:
+                old.effective_to = asof
+                stats.setdefault("membership_closed", 0)
+                stats["membership_closed"] += 1
             session.add(AssetMembership(
                 asset_id=ma.id, group_asset_id=ga.id, weight=r.get("weight"),
                 classification_version=r["classification_version"],
-                effective_from=r["effective_from"]))
+                effective_from=asof))
+            stats.setdefault("membership_inserted", 0)
+            stats["membership_inserted"] += 1
             stats.setdefault("membership_inserted", 0)
             stats["membership_inserted"] += 1
         else:

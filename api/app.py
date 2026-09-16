@@ -538,14 +538,15 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     broad = ("510300", "510500", "159915", "588000")
     srows = conn.execute(
         select(FactObservation.asset_key, FactObservation.source_id,
-               FactObservation.effective_at, FactObservation.value)
+               FactObservation.effective_at, FactObservation.value,
+               FactObservation.available_at)
         .where(FactObservation.asset_key.in_(broad),
                FactObservation.metric == "etf_total_shares",
                FactObservation.quality_status == "valid")
         .order_by(FactObservation.effective_at.desc())).all()
-    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
-    for akey, src, d, v in srows:
-        per.setdefault((akey, src), []).append((str(d), float(v)))
+    per: dict[tuple[str, str], list[tuple[str, float, str | None]]] = {}
+    for akey, src, d, v, available in srows:
+        per.setdefault((akey, src), []).append((str(d), float(v), available))
 
     def _nav_at(akey: str, date_key: str) -> tuple[float, str] | None:
         """NAV 回退链：etf_nav(≤date 最新) → etf_close(≤date 最新) → None。"""
@@ -568,8 +569,11 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
         items.sort()
         if len(items) < 2:
             continue
-        d_new, v_new = items[-1]
-        d_old, v_old = items[-2]
+        d_new, v_new, available_new = items[-1]
+        d_old, v_old, _ = items[-2]
+        if not available_new:
+            limitations.append(f"{akey}:availability_unknown")
+            continue
         delta_shares = v_new - v_old
         navr = _nav_at(akey, d_new)
         if navr is None:
@@ -588,7 +592,8 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
         etf_dir = "inflow" if net_creation_value > 0 else ("outflow" if net_creation_value < 0 else "flat")
         channels["market:broad_etf_creation"] = {
             "evidence_type": "fact", "observation_date": _iso(max(latest_dates)),
-            "available_at": _iso(max(latest_dates)), "status": "fresh",
+            "available_at": max(x[2] for items in per.values() for x in items if x[2]),
+            "status": "fresh",
             "direction": etf_dir, "net_creation_value_yuan": round(net_creation_value, 0),
             "per_etf": per_etf,
             "note": "净创设/赎回价值=Σ(Δ份额×NAV)，T-1官方份额事实，同源差分；"
@@ -601,18 +606,19 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     margin_dirs: dict[str, str] = {}
     for mkt, ch_name in (("market:SSE", "market:margin_sse"), ("market:SZSE", "market:margin_szse")):
         mrows = conn.execute(
-            select(FactObservation.effective_at, FactObservation.value)
+            select(FactObservation.effective_at, FactObservation.value,
+                   FactObservation.available_at)
             .where(FactObservation.subject_key == mkt,
                    FactObservation.metric == "margin_fin_balance",
                    FactObservation.quality_status == "valid")
             .order_by(FactObservation.effective_at.desc()).limit(10)).all()
-        if len(mrows) >= 6:
+        if len(mrows) >= 6 and mrows[0][2]:
             delta5 = float(mrows[0][1]) - float(mrows[5][1])
             mdir = "inflow" if delta5 > 0 else "outflow"
             margin_dirs[mkt] = mdir
             channels[ch_name] = {
                 "evidence_type": "fact", "observation_date": _iso(str(mrows[0][0])),
-                "available_at": _iso(str(mrows[0][0])), "status": "fresh",
+                "available_at": mrows[0][2], "status": "fresh",
                 "direction": mdir, "delta5_yuan": delta5,
             }
         else:
@@ -632,17 +638,18 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     board_flow_dir = None
     if board:
         rows = conn.execute(
-            select(FactObservation.effective_at, FactObservation.value)
+            select(FactObservation.effective_at, FactObservation.value,
+                   FactObservation.available_at)
             .where(FactObservation.subject_key == f"bk:{board}",
                    FactObservation.metric == "sf_main_net",
                    FactObservation.quality_status == "valid")
             .order_by(FactObservation.effective_at.desc()).limit(10)).all()
-        if rows:
-            cum5 = sum(v for _, v in rows[:5])
+        if rows and rows[0][2]:
+            cum5 = sum(v for _, v, _ in rows[:5])
             board_flow_dir = "inflow" if cum5 > 0 else ("outflow" if cum5 < 0 else "flat")
             channels["sector:em_board_flow"] = {
                 "evidence_type": "proxy", "observation_date": _iso(str(rows[0][0])),
-                "available_at": _iso(str(rows[0][0])), "status": "fresh",
+                "available_at": rows[0][2], "status": "fresh",
                 "direction": board_flow_dir, "cum5_net": round(cum5, 0),
             }
         else:
