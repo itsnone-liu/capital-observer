@@ -717,6 +717,41 @@ def get_context(code: str | None = Query(None, description="股票代码（展�
     }
 
 
+@app.get("/api/v1/observations")
+def get_observations(metric: str, start: str, end: str,
+                     as_of: str | None = None, subject_key: str | None = None,
+                     limit: int = Query(5000, ge=1, le=20000)):
+    """Strict PIT fact window; unknown availability is excluded, never guessed."""
+    try:
+        cutoff = dt.datetime.fromisoformat(as_of) if as_of else dt.datetime.utcnow()
+    except ValueError as exc:
+        raise HTTPException(400, "as_of must be ISO-8601") from exc
+    cutoff_iso = cutoff.replace(microsecond=0).isoformat()
+    q = select(FactObservation).where(
+        FactObservation.metric == metric,
+        FactObservation.effective_at >= start,
+        FactObservation.effective_at <= end,
+        FactObservation.available_at.is_not(None),
+        FactObservation.available_at <= cutoff_iso,
+        FactObservation.quality_status == "valid")
+    if subject_key:
+        q = q.where(FactObservation.subject_key == subject_key)
+    rows = Session(engine).execute(q.order_by(FactObservation.effective_at,
+                                               FactObservation.id).limit(limit)).scalars().all()
+    return {"metric": metric, "as_of": cutoff_iso, "view": "strict_pit",
+            "count": len(rows), "observations": [{
+                "id": r.id, "subject_key": r.subject_key, "asset_key": r.asset_key,
+                "value": r.value, "unit": r.unit, "currency": r.currency,
+                "effective_at": r.effective_at, "published_at": r.published_at,
+                "available_at": r.available_at,
+                "ingested_at": r.ingested_at.isoformat() if r.ingested_at else None,
+                "source": r.source_id, "revision": r.revision_id,
+                "supersedes_id": r.supersedes_id, "quality": r.quality_status,
+            } for r in rows],
+            "limitations": ["unknown available_at excluded",
+                            "hindsight/revised-complete view not mixed into this endpoint"]}
+
+
 class ContextItem(BaseModel):
     code: str | None = None
     board: str | None = None
