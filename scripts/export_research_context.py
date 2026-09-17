@@ -61,6 +61,8 @@ def main() -> None:
         "metrics_without_availability": coverage.query(
             "rows_with_availability == 0")["metric"].tolist(),
         "view": "strict_pit",
+        "availability_method": "available-at-background-conservative-v1 "
+                               "(价格量额=T日15:30；份额净值=T日22:00；margin_fin_*未回补)",
         "limitations": [
             "available_at 未知或晚于 as_of 的事实已排除，不猜测",
             "etf_new_exposure = 官方日度份额×单位净值（申赎口径新增暴露），非二级市场现金买入",

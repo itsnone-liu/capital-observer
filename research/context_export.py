@@ -16,8 +16,9 @@ from sqlalchemy.orm import aliased, Session
 from storage.models import Asset, AssetMembership, FactObservation
 
 # 研究侧默认消费的背景指标（可被 CLI 覆盖）。
-# 注意：仅 margin_balance/margin_buy/sf_* 已带可用性戳；其余指标在可用性
-# 回补策略确认前，strict-PIT 导出为空是诚实行为，不是bug。
+# 可用性口径：index/etf/sw 价格量额=T日15:30、份额净值=T日22:00
+# （scripts/stamp_background_availability.py 保守回补，2026-09-17裁定）；
+# margin_fin_* 交易所明细仍在范围外，strict-PIT 导出为空是诚实行为。
 DEFAULT_METRICS = ("index_close", "etf_total_shares", "etf_nav",
                    "margin_fin_balance", "margin_balance",
                    "sw_close", "sw_amount", "sf_main_net")
