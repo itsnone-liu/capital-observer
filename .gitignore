@@ -6,3 +6,5 @@ data/
 *.duckdb
 .venv/
 *.log
+output/research_context/
+output/research/e_stage/
